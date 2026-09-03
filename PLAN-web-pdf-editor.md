@@ -17,14 +17,14 @@ Acrobat Pro, including a "Save as scan" feature equivalent to
 | Annotate | Highlight, underline, strikeout, freehand ink, sticky note, rectangle/ellipse/arrow/line, text box, image stamp |
 | Edit content | Add new text boxes, place images, redact (true content removal), fill existing AcroForm fields, best-effort replace of a single existing text span |
 | Sign | Draw / type / upload signature, place as stamp |
-| Export | Save PDF, flatten annotations, export pages as PNG/JPEG |
+| Export | Save PDF, flatten annotations, export pages as PNG/JPEG, reduce PDF file size with compression profiles |
 | Scan effect | Convert a PDF to an image-only "scanned" PDF with configurable preset |
 | Files | Drag-and-drop open, download result, recent files (local) |
 
 ### 1.2 Later (v2)
 
 - OCR text layer (Tesseract) so scanned output stays searchable.
-- Compression / optimise, strip metadata.
+- Advanced optimisation beyond v1 (font subsetting controls, image transcoding overrides, metadata policies).
 - Password protect (encrypt) and unlock.
 - Page numbering, headers/footers, watermarks, Bates numbering.
 - Compare two PDFs.
@@ -146,8 +146,9 @@ Added beyond the current script:
 | 6 | Browsers | Desktop evergreen only (Chrome, Edge, Firefox, Safari). No mobile work |
 | 7 | Scan fidelity | Must look convincing and be a real raster on save, with tunable parameters per scan type. No pixel-parity requirement against the Python script |
 | 8 | Existing-text editing | Best-effort single-span replace via PyMuPDF redaction + font substitution. Reflow is out of scope |
-| 9 | v1 contents | M1 through M5 all in scope for the first usable version |
+| 9 | v1 contents | M1 through M6 all in scope for the first usable version |
 | 10 | Repo | New `pdf-studio` repo, scaffolded here, moved to its own folder at coding time |
+| 11 | Compression UX | Include one-click profiles similar to online tools: `light`, `balanced`, `strong`, with preview of estimated size reduction before final save |
 
 Still open, low urgency: product name and branding. Neutral default `PDF Studio` used
 until told otherwise.
@@ -171,8 +172,9 @@ signatures.
 | M3 | Page manager | Reorder, rotate, delete, duplicate, insert blank, extract, merge, split, undo/redo | Op log round-trips; export matches preview |
 | M4 | Annotations | Ink, shapes, text box, highlight/underline/strikeout, sticky, image stamp, signature | Annotations persist, reopen and flatten correctly |
 | M5 | Forms, redaction, text replace | AcroForm fill, true redaction, `bake()` flatten, single-span text replace | Redacted text absent from extracted text; replaced span renders correctly |
-| M6 | Polish | Keyboard shortcuts, a11y, error states, perf pass, packaging | One-command start, no unhandled errors in e2e run |
-| M7 | Later | OCR text layer, compression, encryption, watermarks, Bates, compare | Per-feature acceptance |
+| M6 | Compression | PDF size reduction profiles (`light`, `balanced`, `strong`), estimated output size, optional image downsampling, metadata stripping option | For representative fixtures, output size is reduced while preserving acceptable readability; profile behaviour is deterministic |
+| M7 | Polish | Keyboard shortcuts, a11y, error states, perf pass, packaging | One-command start, no unhandled errors in e2e run |
+| M8 | Later | OCR text layer, encryption, watermarks, Bates, compare, advanced optimise controls | Per-feature acceptance |
 
 ---
 
@@ -189,6 +191,7 @@ signatures.
 | PyMuPDF AGPL obligation | Licensing | Project published AGPL-3.0; recorded in section 3.2 |
 | Scan feature misused for forgery | Legal, reputational | Usage notice in the panel, no signature stripping, optional provenance metadata |
 | Font licensing when embedding | Legal | Standard 14 plus bundled open fonts only |
+| Over-compression hurts readability | Poor output quality | Use conservative defaults, expose profile descriptions and estimated size/quality trade-off before apply |
 
 ---
 
@@ -254,4 +257,4 @@ fixtures, never from a real document.
    contract, data model, coordinate rules and pipeline formulas Codex needs.
 2. Scaffold M0: FastAPI app, SQLite schema, library, and the Vite frontend shell.
 3. M1 viewer, then M2 scan effect with the tuning panel.
-4. M3 to M5 in order, each behind its own set of tests.
+4. M3 to M6 in order, each behind its own set of tests.

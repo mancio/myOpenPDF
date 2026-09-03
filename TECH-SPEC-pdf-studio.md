@@ -105,6 +105,7 @@ server: {
 | `max_upload_bytes` | `200_000_000` | |
 | `max_pages` | `2000` | |
 | `max_render_dpi` | `600` | |
+| `max_compress_dpi` | `300` | Upper bound for image downsampling during compression |
 | `job_timeout_seconds` | `900` | |
 | `render_cache_max_bytes` | `2_000_000_000` | LRU eviction |
 
@@ -342,6 +343,7 @@ lower DPI, so what you see is what you save.
 | POST | `/jobs/{id}/cancel` | `202` |
 | GET | `/jobs/{id}/result` | file download |
 | POST | `/documents/{id}/export` | `{format: "pdf"\|"png"\|"jpeg", flatten, pages, dpi}` | `Job` |
+| POST | `/documents/{id}/compress` | `{profile: "light"\|"balanced"\|"strong", stripMetadata, imageDpi}` | `Job` |
 
 SSE payload: `{"progress":0.42,"page":13,"pageCount":31,"message":"rendering"}`.
 
@@ -352,6 +354,15 @@ Export result contract:
   file (`image/png` or `image/jpeg`).
 - `format="png"` or `"jpeg"` with multiple selected pages: return one ZIP archive
   (`application/zip`) containing `page-0001.ext`, `page-0002.ext`, ... in page order.
+
+Compression contract:
+
+- Always returns a downloadable PDF (`application/pdf`) from `GET /jobs/{id}/result`.
+- `profile="light"`: conservative object stream cleanup and recompression, minimal visual loss.
+- `profile="balanced"`: default, includes moderate image downsampling and JPEG recompression.
+- `profile="strong"`: aggressive size reduction with lower image quality floor and stronger downsampling.
+- `stripMetadata=true` removes non-essential metadata and XMP packets.
+- Backend should return an estimated reduction message in `Job.message` when available.
 
 ### 6.5 Error format
 
@@ -493,6 +504,11 @@ class ExportRequest(BaseModel):
     flatten: bool = False
     pages: list[PageUuid] | None = None
     dpi: int = 200
+
+class CompressRequest(BaseModel):
+  profile: Literal["light","balanced","strong"] = "balanced"
+  stripMetadata: bool = True
+  imageDpi: int = Field(200, ge=72, le=300)
 
 # Op is a discriminated union keyed by `kind`; each kind has a dedicated payload model.
 ```
@@ -805,6 +821,7 @@ generated shapes. No real document ever enters the repo.
 | Scan | Output has the same page count and page sizes in points as the input |
 | Scan | Output contains no extractable text |
 | Scan | Preview at 110 DPI and full render at 300 DPI are perceptually similar (SSIM > 0.9 after resize) |
+| Compression | For fixtures with raster content, `balanced` reduces output bytes while preserving legibility; `strong` reduces further with explicit quality trade-off |
 | Coordinates | An annotation placed at a known point round-trips through rotate 90 four times unchanged |
 | Forms | Setting each field type persists and reads back |
 | Text replace | Replacement renders inside the original rect; warnings list font substitution |
@@ -832,6 +849,7 @@ Measured on the development machine with `text_30p.pdf` and a 300-page stress fi
 | Structural op (rotate/reorder) round trip | < 400 ms for 30 pages |
 | Scan preview refresh | < 500 ms at 110 DPI |
 | Full scan, 30 pages at 200 DPI | < 20 s with visible progress |
+| Compress 30-page mixed fixture (`balanced`) | < 8 s with visible progress |
 | Memory, backend, 300-page scan | < 1 GB RSS, page-at-a-time processing |
 
 Process pages one at a time and release pixmaps (`pix = None`) immediately; never hold the
@@ -866,7 +884,10 @@ save, reload and flatten.
 text-selection modes plus a "search and redact all" action, flatten command, single-span
 text replace with warnings surfaced in the UI.
 
-**M6** — All shortcuts, focus management and ARIA on toolbars and dialogs, empty and error
+**M6** — Compression panel with `light` / `balanced` / `strong`, estimated output size,
+optional metadata stripping, and export/download flow with clear quality notes.
+
+**M7** — All shortcuts, focus management and ARIA on toolbars and dialogs, empty and error
 states everywhere, a single `docker compose up` or one PowerShell script that starts both
 processes, and the performance targets met.
 
