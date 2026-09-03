@@ -116,6 +116,83 @@ def test_oplog_rotate_undo_redo(client):
     assert response.json()["cursor"] == 1
 
 
+def test_reject_delete_last_page(client):
+    doc = _create_document(client, page_count=1)
+    doc_id = doc["id"]
+
+    pages = client.get(f"/api/documents/{doc_id}/pages").json()
+    only_page = pages[0]["uuid"]
+
+    response = client.post(
+        f"/api/documents/{doc_id}/ops",
+        json={"kind": "page.delete", "payload": {"pages": [only_page]}},
+    )
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "OP_NOT_APPLICABLE"
+
+    pages_after = client.get(f"/api/documents/{doc_id}/pages")
+    assert pages_after.status_code == 200
+    assert len(pages_after.json()) == 1
+
+
+def test_annotation_ink_and_signature_ops(client):
+    doc = _create_document(client, page_count=1)
+    doc_id = doc["id"]
+    page_uuid = client.get(f"/api/documents/{doc_id}/pages").json()[0]["uuid"]
+
+    ink_id = str(uuid4())
+    response = client.post(
+        f"/api/documents/{doc_id}/ops",
+        json={
+            "kind": "annot.add",
+            "payload": {
+                "annot": {
+                    "id": ink_id,
+                    "page": page_uuid,
+                    "kind": "ink",
+                    "rect": [72, 120, 180, 150],
+                    "points": [[72, 126], [108, 132], [140, 128], [178, 146]],
+                    "color": [0.08, 0.33, 0.75],
+                    "width": 2.4,
+                }
+            },
+        },
+    )
+    assert response.status_code == 200
+
+    signature_id = str(uuid4())
+    response = client.post(
+        f"/api/documents/{doc_id}/ops",
+        json={
+            "kind": "annot.add",
+            "payload": {
+                "annot": {
+                    "id": signature_id,
+                    "page": page_uuid,
+                    "kind": "signature",
+                    "rect": [72, 200, 290, 250],
+                    "text": "Andrea M.",
+                    "color": [0.06, 0.08, 0.21],
+                    "width": 0,
+                }
+            },
+        },
+    )
+    assert response.status_code == 200
+
+    annotations = client.get(f"/api/documents/{doc_id}/annotations")
+    assert annotations.status_code == 200
+    payload = annotations.json()
+    by_id = {item["id"]: item for item in payload}
+    assert by_id[ink_id]["kind"] == "ink"
+    assert len(by_id[ink_id]["points"]) >= 2
+    assert by_id[signature_id]["kind"] == "signature"
+
+    file_response = client.get(f"/api/documents/{doc_id}/file?version=2")
+    assert file_response.status_code == 200
+    assert file_response.content.startswith(b"%PDF-")
+
+
 def test_concurrent_derived_and_thumbnail_requests(client):
     doc = _create_document(client, page_count=2)
     doc_id = doc["id"]

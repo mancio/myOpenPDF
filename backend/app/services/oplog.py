@@ -152,6 +152,11 @@ def apply_state_op(state: EditorState, kind: str, payload: dict[str, Any]) -> No
         for page_uuid in pages:
             _require_page(state, page_uuid)
         to_delete = set(pages)
+        if len(state.order) - len(to_delete) < 1:
+            raise OpValidationError(
+                "OP_NOT_APPLICABLE",
+                "Cannot delete all pages. At least one page must remain.",
+            )
         state.order = [item for item in state.order if item not in to_delete]
         return
 
@@ -523,6 +528,7 @@ def _add_or_update_annotation(
     opacity = float(annot.get("opacity", 1.0))
     width = float(annot.get("width", 1.0))
     text = str(annot.get("text") or "")
+    points_value = annot.get("points")
 
     rect = None
     if isinstance(rect_value, (list, tuple)) and len(rect_value) == 4:
@@ -542,6 +548,11 @@ def _add_or_update_annotation(
         if rect is None:
             rect = pymupdf.Rect(40, 40, 260, 120)
         created = page.add_freetext_annot(rect, text or "Text", fontsize=11, fontname="helv")
+    elif kind == "signature":
+        if rect is None:
+            rect = pymupdf.Rect(40, 40, 260, 105)
+        created = page.add_freetext_annot(rect, text or "Signature", fontsize=18, fontname="helv")
+        width = 0.0
     elif kind == "highlight":
         if rect is None:
             raise OpValidationError("OP_NOT_APPLICABLE", "highlight requires rect")
@@ -562,6 +573,15 @@ def _add_or_update_annotation(
         if rect is None:
             raise OpValidationError("OP_NOT_APPLICABLE", "line requires rect")
         created = page.add_line_annot(rect.tl, rect.br)
+    elif kind == "ink":
+        if not isinstance(points_value, list) or len(points_value) < 2:
+            raise OpValidationError("OP_NOT_APPLICABLE", "ink requires at least two points")
+        stroke: list[tuple[float, float]] = []
+        for pair in points_value:
+            if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+                raise OpValidationError("OP_NOT_APPLICABLE", "ink points must be [x, y]")
+            stroke.append((float(pair[0]), float(pair[1])))
+        created = page.add_ink_annot([stroke])
     elif kind in {"image", "stamp"}:
         asset_id = annot.get("asset_id")
         if not isinstance(asset_id, str):
@@ -579,7 +599,8 @@ def _add_or_update_annotation(
         created = page.add_rect_annot(rect)
 
     if created is not None:
-        if isinstance(color, (list, tuple)) and len(color) == 3:
+        can_set_colors = kind not in {"freetext", "signature"}
+        if can_set_colors and isinstance(color, (list, tuple)) and len(color) == 3:
             created.set_colors(stroke=tuple(float(x) for x in color))
         if isinstance(fill, (list, tuple)) and len(fill) == 3:
             created.set_colors(fill=tuple(float(x) for x in fill))
@@ -703,10 +724,12 @@ def apply_pdf_op(
         return doc
 
     if kind == "page.delete":
-        indices = sorted(
-            (state.order.index(page_uuid) for page_uuid in payload.get("pages", [])),
-            reverse=True,
-        )
+        indices = sorted({state.order.index(page_uuid) for page_uuid in payload.get("pages", [])}, reverse=True)
+        if len(indices) >= doc.page_count:
+            raise OpValidationError(
+                "OP_NOT_APPLICABLE",
+                "Cannot delete all pages. At least one page must remain.",
+            )
         for index in indices:
             doc.delete_page(index)
         apply_state_op(state, kind, payload)
@@ -835,7 +858,15 @@ def build_derived_pdf(session: Session, document: DocumentModel, version: int) -
                 else:
                     doc = apply_pdf_op(doc, state, op.kind, payload, document.id)
 
-            doc.save(temp_path, garbage=4, deflate=True, clean=True)
+            try:
+                doc.save(temp_path, garbage=4, deflate=True, clean=True)
+            except ValueError as error:
+                if "zero pages" in str(error).lower():
+                    raise OpValidationError(
+                        "OP_NOT_APPLICABLE",
+                        "Document has no pages after applied operations.",
+                    ) from error
+                raise
             temp_path.replace(output_path)
         finally:
             doc.close()

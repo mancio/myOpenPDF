@@ -234,8 +234,12 @@ def get_document_pages(document_id: str, session: Session = Depends(get_session)
     if not document:
         return api_error(404, "NOT_FOUND", "Document not found.")
 
-    pdf_path = resolve_pdf_path(session, document, None)
-    state = build_state(session, document)
+    try:
+        pdf_path = resolve_pdf_path(session, document, None)
+        state = build_state(session, document)
+    except OpValidationError as error:
+        return api_error(409, error.code, error.message)
+
     doc = pymupdf.open(pdf_path)
 
     if len(state.order) != doc.page_count:

@@ -47,24 +47,38 @@ type FormField = {
 };
 
 type RectTuple = [number, number, number, number];
+type PointTuple = [number, number];
 type AnnotationKind =
   | 'rect'
   | 'ellipse'
   | 'line'
+  | 'ink'
   | 'highlight'
   | 'underline'
   | 'strikeout'
   | 'note'
   | 'freetext'
-  | 'image';
+  | 'image'
+  | 'signature';
 
 type AnnotationItem = {
   id: string;
   page: string;
   kind: AnnotationKind;
   rect: RectTuple | null;
+  points?: PointTuple[] | null;
   text: string | null;
   asset_id: string | null;
+};
+
+type InkDrawState = {
+  pointerId: number;
+  pageUuid: string;
+  pageWidth: number;
+  pageHeight: number;
+  layerLeft: number;
+  layerTop: number;
+  points: PointTuple[];
 };
 
 type AnnotationDragMode = 'move' | 'resize-tl' | 'resize-tr' | 'resize-bl' | 'resize-br';
@@ -103,15 +117,17 @@ function sleep(ms: number): Promise<void> {
 }
 
 function buildAnnotationPayload(item: AnnotationItem, rect: RectTuple | null): Record<string, unknown> {
+  const isSignature = item.kind === 'signature';
   return {
     id: item.id,
     page: item.page,
     kind: item.kind,
     rect,
-    text: item.text,
-    opacity: 0.95,
-    width: item.kind === 'line' ? 2.2 : 1.6,
-    color: [0.08, 0.33, 0.75],
+    points: item.kind === 'ink' ? item.points : undefined,
+    text: item.kind === 'ink' ? null : item.text,
+    opacity: item.kind === 'highlight' ? 0.35 : 0.95,
+    width: item.kind === 'line' || item.kind === 'ink' ? 2.2 : isSignature ? 0 : 1.6,
+    color: isSignature ? [0.06, 0.08, 0.21] : [0.08, 0.33, 0.75],
     fill: item.kind === 'rect' || item.kind === 'ellipse' ? [0.76, 0.86, 0.99] : undefined,
     asset_id: item.asset_id,
   };
@@ -132,6 +148,25 @@ async function readApiError(response: Response, fallback: string): Promise<strin
     // Ignore parse errors and return fallback.
   }
   return fallback;
+}
+
+function toErrorMessage(value: unknown): string {
+  if (value instanceof Error) {
+    return value.message;
+  }
+  return String(value ?? '');
+}
+
+function isTransientPdfError(value: unknown): boolean {
+  const message = toErrorMessage(value).toLowerCase();
+  return (
+    message.includes('rendering cancelled') ||
+    message.includes('render task cancelled') ||
+    message.includes('abort') ||
+    message.includes('worker was terminated') ||
+    message.includes('transport destroyed') ||
+    message.includes('cancelled')
+  );
 }
 
 async function waitForJob(
@@ -185,7 +220,7 @@ async function loadDocuments(): Promise<DocumentItem[]> {
 async function loadPages(documentId: string): Promise<PageInfo[]> {
   const response = await fetch(`/api/documents/${documentId}/pages`);
   if (!response.ok) {
-    throw new Error('Failed to load pages');
+    throw new Error(await readApiError(response, 'Failed to load pages'));
   }
   return (await response.json()) as PageInfo[];
 }
@@ -193,7 +228,7 @@ async function loadPages(documentId: string): Promise<PageInfo[]> {
 async function loadDocument(documentId: string): Promise<DocumentItem> {
   const response = await fetch(`/api/documents/${documentId}`);
   if (!response.ok) {
-    throw new Error('Failed to load document');
+    throw new Error(await readApiError(response, 'Failed to load document'));
   }
   return (await response.json()) as DocumentItem;
 }
@@ -201,7 +236,7 @@ async function loadDocument(documentId: string): Promise<DocumentItem> {
 async function loadForms(documentId: string): Promise<FormField[]> {
   const response = await fetch(`/api/documents/${documentId}/forms`);
   if (!response.ok) {
-    throw new Error('Failed to load forms');
+    throw new Error(await readApiError(response, 'Failed to load forms'));
   }
   return (await response.json()) as FormField[];
 }
@@ -209,7 +244,7 @@ async function loadForms(documentId: string): Promise<FormField[]> {
 async function loadAnnotations(documentId: string): Promise<AnnotationItem[]> {
   const response = await fetch(`/api/documents/${documentId}/annotations`);
   if (!response.ok) {
-    throw new Error('Failed to load annotations');
+    throw new Error(await readApiError(response, 'Failed to load annotations'));
   }
   return (await response.json()) as AnnotationItem[];
 }
@@ -219,6 +254,10 @@ function makeUuid(): string {
     return crypto.randomUUID();
   }
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function isTextAnnotationKind(kind: AnnotationKind): boolean {
+  return kind === 'note' || kind === 'freetext' || kind === 'signature';
 }
 
 export function App() {
@@ -243,6 +282,7 @@ export function App() {
   const [annotations, setAnnotations] = useState<AnnotationItem[]>([]);
   const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null);
   const [draggingAnnotationId, setDraggingAnnotationId] = useState<string | null>(null);
+  const [inkPreview, setInkPreview] = useState<{ pageUuid: string; points: PointTuple[] } | null>(null);
   const [annotationAssetId, setAnnotationAssetId] = useState<string | null>(null);
   const [exportStatus, setExportStatus] = useState<string>('');
   const [exportFormat, setExportFormat] = useState<ExportFormat>('pdf');
@@ -261,10 +301,12 @@ export function App() {
 
   const viewerRef = useRef<HTMLDivElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const annotationTextInputRef = useRef<HTMLInputElement | null>(null);
   const canvasRefs = useRef<Record<string, HTMLCanvasElement | null>>({});
   const renderCycleRef = useRef(0);
   const renderTaskRefs = useRef<Record<string, { cancel: () => void }>>({});
   const dragStateRef = useRef<AnnotationDragState | null>(null);
+  const inkDrawStateRef = useRef<InkDrawState | null>(null);
   const annotationsRef = useRef<AnnotationItem[]>([]);
   const pendingViewerScrollRef = useRef<{ scrollTop: number; viewportHeight: number } | null>(null);
   const pendingThumbScrollRef = useRef<{ scrollHeight: number; scrollTop: number; clientHeight: number } | null>(
@@ -287,6 +329,15 @@ export function App() {
     () => annotations.find((item) => item.id === selectedAnnotationId) ?? null,
     [annotations, selectedAnnotationId]
   );
+
+  useEffect(() => {
+    if (!selectedAnnotation) {
+      return;
+    }
+    if (selectedAnnotation.text !== null && isTextAnnotationKind(selectedAnnotation.kind)) {
+      setAnnotationText(selectedAnnotation.text);
+    }
+  }, [selectedAnnotation]);
 
   const viewerMetrics = useMemo(() => {
     const itemHeights = pages.map((page) => {
@@ -413,10 +464,14 @@ export function App() {
   }, [pages.length, selectedDocumentId]);
 
   useEffect(() => {
+    setPages([]);
+    setForms([]);
     setAnnotations([]);
     setSelectedAnnotationId(null);
     setDraggingAnnotationId(null);
+    setInkPreview(null);
     dragStateRef.current = null;
+    inkDrawStateRef.current = null;
     setAnnotationAssetId(null);
     setAnnotationStatus('');
   }, [selectedDocumentId]);
@@ -508,6 +563,16 @@ export function App() {
       return;
     }
 
+    if (selectedDoc && selectedDoc.page_count === 0) {
+      setPages([]);
+      setForms([]);
+      setAnnotations([]);
+      setActivePage(null);
+      setPdfDoc(null);
+      setError('This document has no pages. Use Undo, Duplicate, or upload a new document.');
+      return;
+    }
+
     void refreshPages(selectedDocumentId).catch((err) => {
       setError(err instanceof Error ? err.message : 'Failed to load pages');
     });
@@ -519,10 +584,15 @@ export function App() {
     void refreshAnnotations(selectedDocumentId).catch(() => {
       setAnnotations([]);
     });
-  }, [selectedDocumentId, version]);
+  }, [selectedDoc, selectedDocumentId, version]);
 
   useEffect(() => {
     if (!selectedDocumentId) {
+      setPdfDoc(null);
+      return;
+    }
+
+    if (selectedDoc && selectedDoc.page_count === 0) {
       setPdfDoc(null);
       return;
     }
@@ -538,14 +608,16 @@ export function App() {
         setPdfDoc(doc);
       })
       .catch((err) => {
-        setError(err instanceof Error ? err.message : 'Failed to load PDF');
+        if (!disposed && !isTransientPdfError(err)) {
+          setError(err instanceof Error ? err.message : 'Failed to load PDF');
+        }
       });
 
     return () => {
       disposed = true;
       task.destroy();
     };
-  }, [selectedDocumentId, version]);
+  }, [selectedDoc, selectedDocumentId, version]);
 
   useEffect(() => {
     if (!pdfDoc || visiblePages.length === 0) {
@@ -597,11 +669,14 @@ export function App() {
           renderTaskRefs.current[pageInfo.uuid] = { cancel: () => renderTask.cancel() };
           await renderTask.promise.catch(() => undefined);
           delete renderTaskRefs.current[pageInfo.uuid];
-        } catch {
-          if (cycle === renderCycleRef.current) {
+        } catch (error) {
+          if (cycle === renderCycleRef.current && !isTransientPdfError(error)) {
             setError('Failed to render page');
           }
+          continue;
         }
+
+        setError((current) => (current === 'Failed to render page' ? null : current));
       }
     };
 
@@ -703,6 +778,59 @@ export function App() {
         setThumbVisibleCount((current) => Math.min(pages.length, current + THUMB_CHUNK_SIZE));
       }
     });
+  }
+
+  function clampPointToPage(x: number, y: number, pageWidth: number, pageHeight: number): PointTuple {
+    return [Math.max(0, Math.min(pageWidth, x)), Math.max(0, Math.min(pageHeight, y))];
+  }
+
+  function pointFromInkEvent(draw: InkDrawState, clientX: number, clientY: number): PointTuple {
+    const pageX = (clientX - draw.layerLeft) / Math.max(zoom, 0.01);
+    const pageY = (clientY - draw.layerTop) / Math.max(zoom, 0.01);
+    return clampPointToPage(pageX, pageY, draw.pageWidth, draw.pageHeight);
+  }
+
+  function rectFromPoints(points: PointTuple[], pageWidth: number, pageHeight: number): RectTuple {
+    const xs = points.map((point) => point[0]);
+    const ys = points.map((point) => point[1]);
+    const pad = 4;
+    const x0 = Math.max(0, Math.min(...xs) - pad);
+    const y0 = Math.max(0, Math.min(...ys) - pad);
+    const x1 = Math.min(pageWidth, Math.max(...xs) + pad);
+    const y1 = Math.min(pageHeight, Math.max(...ys) + pad);
+    return [x0, y0, x1, y1];
+  }
+
+  function beginInkDraw(event: ReactPointerEvent<HTMLDivElement>, page: PageInfo) {
+    if (annotationKind !== 'ink' || !selectedDocumentId) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const start = clampPointToPage(
+      (event.clientX - bounds.left) / Math.max(zoom, 0.01),
+      (event.clientY - bounds.top) / Math.max(zoom, 0.01),
+      page.width,
+      page.height
+    );
+
+    inkDrawStateRef.current = {
+      pointerId: event.pointerId,
+      pageUuid: page.uuid,
+      pageWidth: page.width,
+      pageHeight: page.height,
+      layerLeft: bounds.left,
+      layerTop: bounds.top,
+      points: [start],
+    };
+
+    setActivePage(page.uuid);
+    setSelectedAnnotationId(null);
+    setInkPreview({ pageUuid: page.uuid, points: [start] });
+    setAnnotationStatus('Drawing mark... release pointer to apply.');
   }
 
   function computeDraggedRect(drag: AnnotationDragState, clientX: number, clientY: number): RectTuple {
@@ -815,7 +943,7 @@ export function App() {
     annotation: AnnotationItem,
     mode: AnnotationDragMode
   ) {
-    if (!annotation.rect) {
+    if (!annotation.rect || annotation.kind === 'ink') {
       return;
     }
     const page = pages.find((entry) => entry.uuid === annotation.page);
@@ -846,45 +974,104 @@ export function App() {
   useEffect(() => {
     const onPointerMove = (event: PointerEvent) => {
       const drag = dragStateRef.current;
-      if (!drag || event.pointerId !== drag.pointerId) {
+      if (drag && event.pointerId === drag.pointerId) {
+        event.preventDefault();
+        const nextRect = computeDraggedRect(drag, event.clientX, event.clientY);
+        setAnnotations((current) =>
+          current.map((item) =>
+            item.id === drag.annotationId
+              ? {
+                  ...item,
+                  rect: nextRect,
+                }
+              : item
+          )
+        );
+        return;
+      }
+
+      const ink = inkDrawStateRef.current;
+      if (!ink || event.pointerId !== ink.pointerId) {
         return;
       }
 
       event.preventDefault();
-      const nextRect = computeDraggedRect(drag, event.clientX, event.clientY);
-      setAnnotations((current) =>
-        current.map((item) =>
-          item.id === drag.annotationId
-            ? {
-                ...item,
-                rect: nextRect,
-              }
-            : item
-        )
-      );
+      const point = pointFromInkEvent(ink, event.clientX, event.clientY);
+      const lastPoint = ink.points[ink.points.length - 1];
+      const distance = Math.hypot(point[0] - lastPoint[0], point[1] - lastPoint[1]);
+      if (distance < 1.6) {
+        return;
+      }
+
+      ink.points = [...ink.points, point];
+      setInkPreview({ pageUuid: ink.pageUuid, points: [...ink.points] });
     };
 
     const onPointerFinish = (event: PointerEvent) => {
       const drag = dragStateRef.current;
-      if (!drag || event.pointerId !== drag.pointerId) {
+      if (drag && event.pointerId === drag.pointerId) {
+        const nextRect = computeDraggedRect(drag, event.clientX, event.clientY);
+        setAnnotations((current) =>
+          current.map((item) =>
+            item.id === drag.annotationId
+              ? {
+                  ...item,
+                  rect: nextRect,
+                }
+              : item
+          )
+        );
+
+        dragStateRef.current = null;
+        setDraggingAnnotationId(null);
+        void persistAnnotationRect(drag.annotationId, drag.startRect, nextRect);
         return;
       }
 
-      const nextRect = computeDraggedRect(drag, event.clientX, event.clientY);
-      setAnnotations((current) =>
-        current.map((item) =>
-          item.id === drag.annotationId
-            ? {
-                ...item,
-                rect: nextRect,
-              }
-            : item
-        )
-      );
+      const ink = inkDrawStateRef.current;
+      if (!ink || event.pointerId !== ink.pointerId) {
+        return;
+      }
 
-      dragStateRef.current = null;
-      setDraggingAnnotationId(null);
-      void persistAnnotationRect(drag.annotationId, drag.startRect, nextRect);
+      event.preventDefault();
+      const endPoint = pointFromInkEvent(ink, event.clientX, event.clientY);
+      const lastPoint = ink.points[ink.points.length - 1];
+      if (Math.hypot(endPoint[0] - lastPoint[0], endPoint[1] - lastPoint[1]) >= 1.6) {
+        ink.points = [...ink.points, endPoint];
+      }
+
+      const points = [...ink.points];
+      const pageUuid = ink.pageUuid;
+      const pageWidth = ink.pageWidth;
+      const pageHeight = ink.pageHeight;
+      inkDrawStateRef.current = null;
+      setInkPreview(null);
+
+      if (points.length < 2) {
+        setAnnotationStatus('Mark cancelled. Drag to draw a stroke.');
+        return;
+      }
+
+      const rect = rectFromPoints(points, pageWidth, pageHeight);
+      const item: AnnotationItem = {
+        id: makeUuid(),
+        page: pageUuid,
+        kind: 'ink',
+        rect,
+        points,
+        text: null,
+        asset_id: null,
+      };
+
+      setSelectedAnnotationId(item.id);
+      void (async () => {
+        const ok = await applyOp('annot.add', { annot: buildAnnotationPayload(item, item.rect) });
+        if (!ok) {
+          setAnnotationStatus('Pen mark failed');
+          return;
+        }
+        setAnnotationStatus('Added pen mark');
+      })();
     };
 
     window.addEventListener('pointermove', onPointerMove);
@@ -895,19 +1082,26 @@ export function App() {
       window.removeEventListener('pointerup', onPointerFinish);
       window.removeEventListener('pointercancel', onPointerFinish);
     };
-  }, [pages, zoom]);
+  }, [annotationKind, pages, selectedDocumentId, zoom]);
 
   function buildAnnotationRect(page: PageInfo, kind: AnnotationKind): RectTuple {
     if (kind === 'line') {
       const y = page.height * 0.45;
       return [page.width * 0.25, y, page.width * 0.75, y + 10];
     }
+    if (kind === 'signature') {
+      const width = Math.max(180, Math.min(300, page.width * 0.42));
+      const height = 54;
+      const x = (page.width - width) / 2;
+      const y = page.height * 0.72;
+      return [x, y, x + width, y + height];
+    }
     if (kind === 'highlight' || kind === 'underline' || kind === 'strikeout') {
       const y = page.height * 0.35;
       return [page.width * 0.2, y, page.width * 0.75, y + 24];
     }
     const width = Math.max(140, Math.min(240, page.width * 0.35));
-    const height = kind === 'note' ? 80 : 96;
+    const height = kind === 'note' ? 80 : kind === 'freetext' ? 108 : 96;
     const x = (page.width - width) / 2;
     const y = (page.height - height) / 2;
     return [x, y, x + width, y + height];
@@ -923,17 +1117,31 @@ export function App() {
       return;
     }
 
+    if (annotationKind === 'ink') {
+      setAnnotationStatus('Use click-drag directly on the page to draw a mark.');
+      return;
+    }
+
     if (annotationKind === 'image' && !annotationAssetId) {
       setAnnotationStatus('Upload a stamp image first.');
       return;
     }
+
+    const typedText = (annotationTextInputRef.current?.value ?? annotationText).trim();
+
+    if (annotationKind === 'signature' && !typedText) {
+      setAnnotationStatus('Enter signature text first.');
+      return;
+    }
+
+    const usesText = isTextAnnotationKind(annotationKind);
 
     const item: AnnotationItem = {
       id: makeUuid(),
       page: activePage,
       kind: annotationKind,
       rect: buildAnnotationRect(page, annotationKind),
-      text: annotationText,
+      text: usesText ? typedText : null,
       asset_id: annotationAssetId,
     };
 
@@ -945,6 +1153,38 @@ export function App() {
 
     setSelectedAnnotationId(item.id);
     setAnnotationStatus(`Added ${annotationKind} annotation`);
+  }
+
+  async function runUpdateSelectedAnnotationText() {
+    if (!selectedAnnotation) {
+      setAnnotationStatus('Select an annotation first.');
+      return;
+    }
+
+    if (!isTextAnnotationKind(selectedAnnotation.kind)) {
+      setAnnotationStatus('Selected annotation does not support text editing.');
+      return;
+    }
+
+    const nextText = (annotationTextInputRef.current?.value ?? annotationText).trim();
+    if (!nextText) {
+      setAnnotationStatus('Text cannot be empty.');
+      return;
+    }
+
+    const updated: AnnotationItem = {
+      ...selectedAnnotation,
+      text: nextText,
+    };
+
+    const ok = await applyOp('annot.update', {
+      annot: buildAnnotationPayload(updated, updated.rect),
+    });
+    if (!ok) {
+      setAnnotationStatus('Update annotation text failed');
+      return;
+    }
+    setAnnotationStatus('Updated selected annotation text');
   }
 
   async function runNudgeLastAnnotation() {
@@ -964,6 +1204,9 @@ export function App() {
     const moved: AnnotationItem = {
       ...selected,
       rect: [selected.rect[0] + 12, selected.rect[1] + 10, selected.rect[2] + 12, selected.rect[3] + 10],
+      points: selected.points
+        ? selected.points.map((point) => [point[0] + 12, point[1] + 10] as PointTuple)
+        : selected.points,
     };
 
     const ok = await applyOp('annot.update', {
@@ -1472,13 +1715,21 @@ export function App() {
   }
 
   function annotationLabel(item: AnnotationItem): string {
-    if (item.kind === 'freetext' || item.kind === 'note') {
+    if (item.kind === 'freetext' || item.kind === 'note' || item.kind === 'signature') {
       return item.text?.slice(0, 32) || item.kind;
+    }
+    if (item.kind === 'ink') {
+      return 'pen mark';
     }
     return item.kind;
   }
 
   function annotationRectStyle(item: AnnotationItem): CSSProperties {
+    if (!item.rect && item.points && item.points.length > 1) {
+      const rect = rectFromPoints(item.points, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER);
+      item = { ...item, rect };
+    }
+
     if (!item.rect) {
       return { display: 'none' };
     }
@@ -1602,6 +1853,7 @@ export function App() {
                   type="button"
                   className={doc.id === selectedDocumentId ? 'doc-btn doc-btn-active' : 'doc-btn'}
                   onClick={() => {
+                    setError(null);
                     setSelectedDocumentId(doc.id);
                     setVersion(doc.version);
                     setActivePage(null);
@@ -1688,13 +1940,23 @@ export function App() {
                 onClick={() => setActivePage(pageInfo.uuid)}
               >
                 <header>Page {pageInfo.index + 1}</header>
-                <div className="page-canvas-wrap">
+                <div
+                  className={annotationKind === 'ink' ? 'page-canvas-wrap ink-mode' : 'page-canvas-wrap'}
+                  onPointerDown={(event) => beginInkDraw(event, pageInfo)}
+                >
                   <canvas
                     ref={(element) => {
                       canvasRefs.current[pageInfo.uuid] = element;
                     }}
                   />
-                  <div className="annotation-layer">
+                  <div className={annotationKind === 'ink' ? 'annotation-layer annotation-layer-ink-mode' : 'annotation-layer'}>
+                    {inkPreview && inkPreview.pageUuid === pageInfo.uuid && inkPreview.points.length > 1 && (
+                      <svg className="ink-preview" aria-hidden="true">
+                        <polyline
+                          points={inkPreview.points.map((point) => `${point[0] * zoom},${point[1] * zoom}`).join(' ')}
+                        />
+                      </svg>
+                    )}
                     {annotations
                       .filter((annotation) => annotation.page === pageInfo.uuid)
                       .map((annotation) => (
@@ -1704,9 +1966,15 @@ export function App() {
                           className={
                             selectedAnnotationId === annotation.id
                               ? draggingAnnotationId === annotation.id
-                                ? 'annotation-box annotation-box-selected annotation-box-dragging'
-                                : 'annotation-box annotation-box-selected'
-                              : 'annotation-box'
+                                ? annotation.kind === 'ink'
+                                  ? 'annotation-box annotation-box-ink annotation-box-selected annotation-box-dragging'
+                                  : 'annotation-box annotation-box-selected annotation-box-dragging'
+                                : annotation.kind === 'ink'
+                                  ? 'annotation-box annotation-box-ink annotation-box-selected'
+                                  : 'annotation-box annotation-box-selected'
+                              : annotation.kind === 'ink'
+                                ? 'annotation-box annotation-box-ink'
+                                : 'annotation-box'
                           }
                           style={annotationRectStyle(annotation)}
                           onPointerDown={(event) => beginAnnotationDrag(event, annotation, 'move')}
@@ -1714,11 +1982,14 @@ export function App() {
                             event.stopPropagation();
                             setSelectedAnnotationId(annotation.id);
                             setActivePage(pageInfo.uuid);
+                            if (annotation.text !== null && isTextAnnotationKind(annotation.kind)) {
+                              setAnnotationText(annotation.text);
+                            }
                           }}
                           title={annotationLabel(annotation)}
                           aria-label={`Annotation ${annotationLabel(annotation)}`}
                         >
-                          {selectedAnnotationId === annotation.id && (
+                          {selectedAnnotationId === annotation.id && annotation.kind !== 'ink' && (
                             <>
                               <span
                                 className="annotation-handle tl"
@@ -1776,24 +2047,39 @@ export function App() {
               <option value="highlight">Highlight</option>
               <option value="underline">Underline</option>
               <option value="strikeout">Strikeout</option>
+              <option value="ink">Pen mark</option>
               <option value="rect">Rectangle</option>
               <option value="ellipse">Ellipse</option>
               <option value="line">Line</option>
               <option value="note">Sticky note</option>
               <option value="freetext">Text box</option>
               <option value="image">Image stamp</option>
+              <option value="signature">Signature text</option>
             </select>
           </label>
 
           <label className="field">
-            <span>Text</span>
+            <span>{annotationKind === 'signature' ? 'Signature text' : 'Text'}</span>
             <input
+              ref={annotationTextInputRef}
               type="text"
               value={annotationText}
               onChange={(event) => setAnnotationText(event.target.value)}
-              placeholder="Annotation text"
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && selectedAnnotation && isTextAnnotationKind(selectedAnnotation.kind)) {
+                  event.preventDefault();
+                  void runUpdateSelectedAnnotationText();
+                }
+              }}
+              placeholder={annotationKind === 'signature' ? 'Type signer name' : 'Annotation text'}
             />
           </label>
+
+          {annotationKind === 'ink' && (
+            <p className="muted-small" role="status" aria-live="polite">
+              Draw directly on the page using click-drag to place a pen mark.
+            </p>
+          )}
 
           <label className="upload upload-secondary">
             <span>Upload Stamp Image</span>
@@ -1810,8 +2096,19 @@ export function App() {
             />
           </label>
 
-          <button type="button" onClick={() => void runAddAnnotation()} disabled={!activePage}>
+          <button
+            type="button"
+            onClick={() => void runAddAnnotation()}
+            disabled={!activePage || annotationKind === 'ink'}
+          >
             Add Annotation To Active Page
+          </button>
+          <button
+            type="button"
+            onClick={() => void runUpdateSelectedAnnotationText()}
+            disabled={!selectedAnnotation || !isTextAnnotationKind(selectedAnnotation.kind)}
+          >
+            Apply Text To Selected
           </button>
           <button type="button" onClick={() => void runNudgeLastAnnotation()} disabled={!selectedAnnotation}>
             Move Selected Annotation
@@ -1825,7 +2122,12 @@ export function App() {
                 key={item.id}
                 type="button"
                 className={selectedAnnotationId === item.id ? 'annotation-row active' : 'annotation-row'}
-                onClick={() => setSelectedAnnotationId(item.id)}
+                onClick={() => {
+                  setSelectedAnnotationId(item.id);
+                  if (item.text !== null && isTextAnnotationKind(item.kind)) {
+                    setAnnotationText(item.text);
+                  }
+                }}
               >
                 {annotationLabel(item)}
               </button>

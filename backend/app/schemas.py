@@ -197,8 +197,10 @@ class AnnotationPayload(BaseModel):
         "note",
         "stamp",
         "image",
+        "signature",
     ]
     rect: tuple[float, float, float, float] | None = None
+    points: list[tuple[float, float]] | None = None
     text: str | None = None
     color: tuple[float, float, float] | None = None
     fill: tuple[float, float, float] | None = None

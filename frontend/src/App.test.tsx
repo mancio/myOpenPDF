@@ -28,7 +28,8 @@ type MockState = {
     id: string;
     page: string;
     kind: string;
-    rect: [number, number, number, number];
+    rect: [number, number, number, number] | null;
+    points?: [number, number][] | null;
     text: string | null;
     asset_id: string | null;
   }>;
@@ -105,7 +106,8 @@ function createFetchMock(state: MockState) {
           id: string;
           page: string;
           kind: string;
-          rect: [number, number, number, number];
+          rect: [number, number, number, number] | null;
+          points?: [number, number][];
           text?: string;
           asset_id?: string;
         };
@@ -115,6 +117,7 @@ function createFetchMock(state: MockState) {
             page: annot.page,
             kind: annot.kind,
             rect: annot.rect,
+            points: annot.points ?? null,
             text: annot.text ?? null,
             asset_id: annot.asset_id ?? null,
           },
@@ -124,11 +127,19 @@ function createFetchMock(state: MockState) {
       if (payload.kind === 'annot.update') {
         const annot = payload.payload.annot as {
           id: string;
-          rect: [number, number, number, number];
+          rect: [number, number, number, number] | null;
+          points?: [number, number][];
           text?: string;
         };
         state.annotations = state.annotations.map((item) =>
-          item.id === annot.id ? { ...item, rect: annot.rect, text: annot.text ?? item.text } : item
+          item.id === annot.id
+            ? {
+                ...item,
+                rect: annot.rect,
+                points: annot.points ?? item.points ?? null,
+                text: annot.text ?? item.text,
+              }
+            : item
         );
       }
 
@@ -296,6 +307,77 @@ describe('App flows', () => {
       });
       expect(calledUndo).toBe(true);
       expect(calledRedo).toBe(true);
+    });
+  });
+
+  test('supports drawing pen marks directly on page', async () => {
+    const state: MockState = { version: 0, pageCount: 1, annotations: [], jobPolls: 0 };
+    const fetchMock = createFetchMock(state);
+    globalThis.fetch = fetchMock;
+
+    const { container } = render(<App />);
+    await screen.findByText('Sample');
+
+    const toolSelect = screen.getByLabelText('Tool');
+    fireEvent.change(toolSelect, { target: { value: 'ink' } });
+
+    const pageWrap = container.querySelector('.page-canvas-wrap') as HTMLElement;
+    expect(pageWrap).not.toBeNull();
+
+    fireEvent.pointerDown(pageWrap, { pointerId: 7, button: 0, clientX: 120, clientY: 120 });
+    fireEvent.pointerMove(window, { pointerId: 7, clientX: 148, clientY: 136 });
+    fireEvent.pointerUp(window, { pointerId: 7, clientX: 172, clientY: 148 });
+
+    await waitFor(() => {
+      const hasInkAdd = fetchMock.mock.calls.some(([, init]) => {
+        if (!init || init.method !== 'POST' || typeof init.body !== 'string') {
+          return false;
+        }
+        return init.body.includes('"kind":"annot.add"') && init.body.includes('"kind":"ink"');
+      });
+      expect(hasInkAdd).toBe(true);
+    });
+  });
+
+  test('applies edited text to selected text annotation', async () => {
+    const state: MockState = { version: 0, pageCount: 1, annotations: [], jobPolls: 0 };
+    const fetchMock = createFetchMock(state);
+    globalThis.fetch = fetchMock;
+
+    render(<App />);
+    await screen.findByText('Sample');
+
+    fireEvent.change(screen.getByLabelText('Tool'), { target: { value: 'freetext' } });
+    fireEvent.change(screen.getByLabelText('Text'), { target: { value: 'Draft value' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add Annotation To Active Page' }));
+
+    const row = await screen.findByRole('button', { name: 'Draft value' });
+    fireEvent.click(row);
+
+    const textInput = screen.getByPlaceholderText('Annotation text') as HTMLInputElement;
+    fireEvent.change(textInput, { target: { value: 'Final value' } });
+    expect(textInput.value).toBe('Final value');
+
+    const applyButton = screen.getByRole('button', { name: 'Apply Text To Selected' });
+    expect(applyButton).toBeEnabled();
+    fireEvent.click(applyButton);
+
+    await waitFor(() => {
+      expect(screen.getByText('Updated selected annotation text')).toBeInTheDocument();
+    });
+
+    await waitFor(() => {
+      const didSendUpdatedText = fetchMock.mock.calls.some(([, init]) => {
+        if (!init || init.method !== 'POST' || typeof init.body !== 'string') {
+          return false;
+        }
+        const body = JSON.parse(init.body) as {
+          kind?: string;
+          payload?: { annot?: { text?: string } };
+        };
+        return body.kind === 'annot.update' && body.payload?.annot?.text === 'Final value';
+      });
+      expect(didSendUpdatedText).toBe(true);
     });
   });
 });
