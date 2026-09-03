@@ -20,3 +20,47 @@ class DocumentModel(SQLModel, table=True):
     version: int = 0
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
+
+
+class OpModel(SQLModel, table=True):
+    __tablename__ = "op"
+
+    id: int | None = Field(default=None, primary_key=True)
+    document_id: str = Field(index=True)
+    seq: int = Field(index=True)
+    kind: str
+    payload: str
+    created_at: datetime = Field(default_factory=utcnow)
+
+
+class PageRefModel(SQLModel, table=True):
+    __tablename__ = "page_ref"
+
+    document_id: str = Field(primary_key=True)
+    page_uuid: str = Field(primary_key=True)
+    origin: str
+    origin_index: int | None = None
+
+
+class PresetModel(SQLModel, table=True):
+    __tablename__ = "preset"
+
+    id: str = Field(primary_key=True)
+    name: str = Field(unique=True)
+    params: str
+    builtin: bool = False
+    created_at: datetime = Field(default_factory=utcnow)
+
+
+class JobModel(SQLModel, table=True):
+    __tablename__ = "job"
+
+    id: str = Field(primary_key=True)
+    document_id: str = Field(index=True)
+    kind: str
+    status: str
+    progress: float = 0.0
+    message: str | None = None
+    result_path: str | None = None
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)

@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     allowed_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
     max_upload_bytes: int = 200_000_000
     max_pages: int = 2000
+    max_render_dpi: int = 600
+    job_timeout_seconds: int = 900
 
 
 @lru_cache
