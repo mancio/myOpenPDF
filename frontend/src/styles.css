@@ -252,6 +252,23 @@ button:disabled {
   gap: 0.55rem;
 }
 
+.field {
+  display: grid;
+  gap: 0.35rem;
+  font-size: 0.92rem;
+}
+
+.field select,
+.field input[type='range'] {
+  width: 100%;
+}
+
+.checkbox-field {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
 .scan-preview {
   width: 100%;
   border: 1px solid #d4e1f0;

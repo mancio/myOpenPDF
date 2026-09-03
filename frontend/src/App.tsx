@@ -37,6 +37,8 @@ type Job = {
   message: string | null;
 };
 
+type CompressionProfile = 'light' | 'balanced' | 'strong';
+
 const defaultScanParams = {
   dpi: 200,
   color_mode: 'gray',
@@ -85,6 +87,10 @@ export function App() {
   const [pdfDoc, setPdfDoc] = useState<PDFDocumentProxy | null>(null);
   const [scanPreviewUrl, setScanPreviewUrl] = useState<string | null>(null);
   const [scanStatus, setScanStatus] = useState<string>('');
+  const [compressStatus, setCompressStatus] = useState<string>('');
+  const [compressProfile, setCompressProfile] = useState<CompressionProfile>('balanced');
+  const [compressDpi, setCompressDpi] = useState(200);
+  const [compressStripMetadata, setCompressStripMetadata] = useState(true);
 
   const viewerRef = useRef<HTMLDivElement | null>(null);
   const canvasRefs = useRef<Record<string, HTMLCanvasElement | null>>({});
@@ -357,6 +363,40 @@ export function App() {
     setScanStatus(job.message ?? 'Scan export done');
   }
 
+  async function runCompress() {
+    if (!selectedDocumentId) {
+      return;
+    }
+
+    setCompressStatus('Running compression...');
+    const response = await fetch(`/api/documents/${selectedDocumentId}/compress`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        profile: compressProfile,
+        stripMetadata: compressStripMetadata,
+        imageDpi: compressDpi,
+      }),
+    });
+
+    if (!response.ok) {
+      setCompressStatus('Compression failed');
+      return;
+    }
+
+    const job = (await response.json()) as Job;
+    if (job.status !== 'done') {
+      setCompressStatus(`Compression status: ${job.status}`);
+      return;
+    }
+
+    const download = document.createElement('a');
+    download.href = `/api/jobs/${job.id}/result`;
+    download.download = `compressed-${job.id}.pdf`;
+    download.click();
+    setCompressStatus(job.message ?? 'Compression done');
+  }
+
   return (
     <main className="page">
       <header className="header">
@@ -505,6 +545,47 @@ export function App() {
           </button>
           <p>{scanStatus}</p>
           {scanPreviewUrl && <img src={scanPreviewUrl} alt="Scan preview" className="scan-preview" />}
+
+          <h2>Reduce File Size</h2>
+          <p className="notice">Profiles mirror online tools: light, balanced, strong.</p>
+
+          <label className="field">
+            <span>Profile</span>
+            <select
+              value={compressProfile}
+              onChange={(event) => setCompressProfile(event.target.value as CompressionProfile)}
+            >
+              <option value="light">Light (best quality)</option>
+              <option value="balanced">Balanced (recommended)</option>
+              <option value="strong">Strong (smallest size)</option>
+            </select>
+          </label>
+
+          <label className="field">
+            <span>Image DPI: {compressDpi}</span>
+            <input
+              type="range"
+              min={72}
+              max={300}
+              step={1}
+              value={compressDpi}
+              onChange={(event) => setCompressDpi(Number(event.target.value))}
+            />
+          </label>
+
+          <label className="field checkbox-field">
+            <input
+              type="checkbox"
+              checked={compressStripMetadata}
+              onChange={(event) => setCompressStripMetadata(event.target.checked)}
+            />
+            <span>Strip metadata</span>
+          </label>
+
+          <button type="button" onClick={() => void runCompress()} disabled={!selectedDocumentId}>
+            Export Compressed PDF
+          </button>
+          <p>{compressStatus}</p>
         </aside>
       </section>
     </main>

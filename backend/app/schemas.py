@@ -133,10 +133,16 @@ class ScanRunRequest(BaseModel):
     mode: Literal["in_place", "export"] = "export"
 
 
+class CompressRequest(BaseModel):
+    profile: Literal["light", "balanced", "strong"] = "balanced"
+    stripMetadata: bool = True
+    imageDpi: int = Field(200, ge=72, le=600)
+
+
 class Job(BaseModel):
     id: str
     document_id: str
-    kind: Literal["scan", "export", "ocr"]
+    kind: Literal["scan", "export", "ocr", "compress"]
     status: Literal["queued", "running", "done", "error", "cancelled"]
     progress: float
     message: str | None = None

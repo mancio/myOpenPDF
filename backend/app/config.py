@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     max_upload_bytes: int = 200_000_000
     max_pages: int = 2000
     max_render_dpi: int = 600
+    max_compress_dpi: int = 300
     job_timeout_seconds: int = 900
 
 

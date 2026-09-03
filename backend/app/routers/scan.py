@@ -192,4 +192,4 @@ def get_job_result(job_id: str, session: Session = Depends(get_session)):
     path = Path(job.result_path)
     if not path.exists():
         return api_error(404, "NOT_FOUND", "Result file is missing.")
-    return FileResponse(path=path, media_type="application/pdf", filename=f"scan-{job.id}.pdf")
+    return FileResponse(path=path, media_type="application/pdf", filename=path.name)

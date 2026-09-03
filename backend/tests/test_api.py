@@ -140,3 +140,38 @@ def test_scan_preview_and_export_job(client):
         assert result.status_code == 200
         assert result.headers["content-type"] == "application/pdf"
         assert result.content.startswith(b"%PDF-")
+
+
+def test_compress_endpoint(client):
+    doc = _create_document(client)
+    doc_id = doc["id"]
+
+    payload = {
+        "profile": "balanced",
+        "stripMetadata": True,
+        "imageDpi": 200,
+    }
+    response = client.post(f"/api/documents/{doc_id}/compress", json=payload)
+    assert response.status_code == 200
+    job = response.json()
+    assert job["kind"] == "compress"
+    assert job["status"] in {"done", "error"}
+
+    if job["status"] == "done":
+        result = client.get(f"/api/jobs/{job['id']}/result")
+        assert result.status_code == 200
+        assert result.headers["content-type"] == "application/pdf"
+        assert result.content.startswith(b"%PDF-")
+
+
+def test_compress_endpoint_rejects_high_dpi(client):
+    doc = _create_document(client)
+    doc_id = doc["id"]
+
+    payload = {
+        "profile": "strong",
+        "stripMetadata": True,
+        "imageDpi": 999,
+    }
+    response = client.post(f"/api/documents/{doc_id}/compress", json=payload)
+    assert response.status_code == 422
