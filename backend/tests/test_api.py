@@ -175,3 +175,22 @@ def test_compress_endpoint_rejects_high_dpi(client):
     }
     response = client.post(f"/api/documents/{doc_id}/compress", json=payload)
     assert response.status_code == 422
+
+
+def test_compress_estimate_endpoint(client):
+    doc = _create_document(client)
+    doc_id = doc["id"]
+
+    payload = {
+        "profile": "balanced",
+        "stripMetadata": True,
+        "imageDpi": 200,
+    }
+    response = client.post(f"/api/documents/{doc_id}/compress/estimate", json=payload)
+    assert response.status_code == 200
+
+    estimate = response.json()
+    assert estimate["profile"] == "balanced"
+    assert estimate["sourceBytes"] > 0
+    assert estimate["estimatedBytes"] > 0
+    assert isinstance(estimate["estimatedReductionPercent"], float)

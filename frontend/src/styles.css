@@ -269,6 +269,18 @@ button:disabled {
   gap: 0.45rem;
 }
 
+.estimate-box {
+  border: 1px solid #bdd4ef;
+  background: #eff6ff;
+  border-radius: 10px;
+  padding: 0.55rem 0.65rem;
+  font-size: 0.9rem;
+}
+
+.estimate-box p {
+  margin: 0.15rem 0;
+}
+
 .scan-preview {
   width: 100%;
   border: 1px solid #d4e1f0;

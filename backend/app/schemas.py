@@ -139,6 +139,14 @@ class CompressRequest(BaseModel):
     imageDpi: int = Field(200, ge=72, le=600)
 
 
+class CompressEstimateResponse(BaseModel):
+    sourceBytes: int
+    estimatedBytes: int
+    estimatedReductionPercent: float
+    profile: Literal["light", "balanced", "strong"]
+    note: str | None = None
+
+
 class Job(BaseModel):
     id: str
     document_id: str

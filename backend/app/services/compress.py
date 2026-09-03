@@ -14,6 +14,14 @@ class CompressionResult:
     note: str | None = None
 
 
+@dataclass
+class CompressionEstimate:
+    source_bytes: int
+    estimated_bytes: int
+    estimated_reduction_percent: float
+    note: str | None = None
+
+
 def _compress_lossless(
     doc: pymupdf.Document,
     strip_metadata: bool,
@@ -74,5 +82,63 @@ def compress_pdf_file(
 
         data, note = _compress_strong(doc, strip_metadata, image_dpi)
         return CompressionResult(data=data, output_bytes=len(data), note=note)
+    finally:
+        doc.close()
+
+
+def _estimate_ratio_for_profile(
+    profile: Literal["light", "balanced", "strong"],
+    strip_metadata: bool,
+) -> float:
+    if profile == "light":
+        return 0.9 if strip_metadata else 0.94
+    if profile == "balanced":
+        return 0.76 if strip_metadata else 0.8
+    return 0.55 if strip_metadata else 0.58
+
+
+def estimate_compression(
+    source_path: Path,
+    profile: Literal["light", "balanced", "strong"],
+    strip_metadata: bool,
+    image_dpi: int,
+) -> CompressionEstimate:
+    source_bytes = source_path.stat().st_size
+    doc = pymupdf.open(source_path)
+    try:
+        note: str | None = None
+
+        if profile == "strong":
+            page_count = max(1, doc.page_count)
+            sample_count = min(3, page_count)
+            scale = image_dpi / 72.0
+            matrix = pymupdf.Matrix(scale, scale)
+            sampled_bytes = 0
+
+            for index in range(sample_count):
+                page = doc[index]
+                pix = page.get_pixmap(matrix=matrix, colorspace=pymupdf.csRGB, alpha=False)
+                image = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                img_buf = io.BytesIO()
+                image.save(img_buf, format="JPEG", quality=56, optimize=True)
+                sampled_bytes += len(img_buf.getvalue())
+
+            average_per_page = sampled_bytes / sample_count
+            estimated_bytes = int((average_per_page * page_count) + (32 * 1024))
+            if strip_metadata:
+                estimated_bytes = int(estimated_bytes * 0.98)
+            note = "Strong profile estimate assumes rasterization and text-layer removal."
+        else:
+            ratio = _estimate_ratio_for_profile(profile, strip_metadata)
+            estimated_bytes = int(source_bytes * ratio)
+
+        estimated_bytes = max(1, estimated_bytes)
+        reduction = ((source_bytes - estimated_bytes) / source_bytes) * 100 if source_bytes else 0.0
+        return CompressionEstimate(
+            source_bytes=source_bytes,
+            estimated_bytes=estimated_bytes,
+            estimated_reduction_percent=round(reduction, 2),
+            note=note,
+        )
     finally:
         doc.close()

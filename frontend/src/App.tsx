@@ -37,6 +37,14 @@ type Job = {
   message: string | null;
 };
 
+type CompressionEstimate = {
+  sourceBytes: number;
+  estimatedBytes: number;
+  estimatedReductionPercent: number;
+  profile: CompressionProfile;
+  note: string | null;
+};
+
 type CompressionProfile = 'light' | 'balanced' | 'strong';
 
 const defaultScanParams = {
@@ -91,6 +99,7 @@ export function App() {
   const [compressProfile, setCompressProfile] = useState<CompressionProfile>('balanced');
   const [compressDpi, setCompressDpi] = useState(200);
   const [compressStripMetadata, setCompressStripMetadata] = useState(true);
+  const [compressEstimate, setCompressEstimate] = useState<CompressionEstimate | null>(null);
 
   const viewerRef = useRef<HTMLDivElement | null>(null);
   const canvasRefs = useRef<Record<string, HTMLCanvasElement | null>>({});
@@ -397,6 +406,47 @@ export function App() {
     setCompressStatus(job.message ?? 'Compression done');
   }
 
+  async function estimateCompress() {
+    if (!selectedDocumentId) {
+      return;
+    }
+
+    setCompressStatus('Estimating output size...');
+    const response = await fetch(`/api/documents/${selectedDocumentId}/compress/estimate`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        profile: compressProfile,
+        stripMetadata: compressStripMetadata,
+        imageDpi: compressDpi,
+      }),
+    });
+
+    if (!response.ok) {
+      setCompressStatus('Estimate failed');
+      setCompressEstimate(null);
+      return;
+    }
+
+    const estimate = (await response.json()) as CompressionEstimate;
+    setCompressEstimate(estimate);
+    setCompressStatus('Estimate ready');
+  }
+
+  function formatBytes(size: number): string {
+    const units = ['B', 'KB', 'MB', 'GB'];
+    let value = size;
+    let unitIndex = 0;
+    while (value >= 1024 && unitIndex < units.length - 1) {
+      value /= 1024;
+      unitIndex += 1;
+    }
+    if (unitIndex === 0) {
+      return `${Math.floor(value)} ${units[unitIndex]}`;
+    }
+    return `${value.toFixed(1)} ${units[unitIndex]}`;
+  }
+
   return (
     <main className="page">
       <header className="header">
@@ -585,6 +635,21 @@ export function App() {
           <button type="button" onClick={() => void runCompress()} disabled={!selectedDocumentId}>
             Export Compressed PDF
           </button>
+
+          <button type="button" onClick={() => void estimateCompress()} disabled={!selectedDocumentId}>
+            Estimate Size Reduction
+          </button>
+
+          {compressEstimate && (
+            <div className="estimate-box">
+              <p>
+                Estimated: {formatBytes(compressEstimate.sourceBytes)} to {formatBytes(compressEstimate.estimatedBytes)}
+              </p>
+              <p>Estimated reduction: {compressEstimate.estimatedReductionPercent.toFixed(1)}%</p>
+              {compressEstimate.note && <p>{compressEstimate.note}</p>}
+            </div>
+          )}
+
           <p>{compressStatus}</p>
         </aside>
       </section>

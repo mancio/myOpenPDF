@@ -9,8 +9,8 @@ from app.config import get_settings
 from app.db import get_session
 from app.errors import api_error
 from app.models import DocumentModel, JobModel
-from app.schemas import CompressRequest, Job
-from app.services.compress import compress_pdf_file
+from app.schemas import CompressEstimateResponse, CompressRequest, Job
+from app.services.compress import compress_pdf_file, estimate_compression
 from app.services.oplog import OpValidationError, resolve_pdf_path
 from app.services.store import safe_path
 
@@ -130,3 +130,42 @@ def compress_document(
         session.commit()
         session.refresh(job)
         return _job_schema(job)
+
+
+@router.post("/{document_id}/compress/estimate", response_model=CompressEstimateResponse)
+def estimate_document_compression(
+    document_id: str,
+    request: CompressRequest,
+    session: Session = Depends(get_session),
+):
+    document = session.get(DocumentModel, document_id)
+    if not document:
+        return api_error(404, "NOT_FOUND", "Document not found.")
+
+    settings = get_settings()
+    if request.imageDpi > settings.max_compress_dpi:
+        return api_error(
+            422,
+            "OP_NOT_APPLICABLE",
+            f"imageDpi must be <= {settings.max_compress_dpi}.",
+        )
+
+    try:
+        pdf_path = resolve_pdf_path(session, document, None)
+        estimate = estimate_compression(
+            source_path=Path(pdf_path),
+            profile=request.profile,
+            strip_metadata=request.stripMetadata,
+            image_dpi=request.imageDpi,
+        )
+        return CompressEstimateResponse(
+            sourceBytes=estimate.source_bytes,
+            estimatedBytes=estimate.estimated_bytes,
+            estimatedReductionPercent=estimate.estimated_reduction_percent,
+            profile=request.profile,
+            note=estimate.note,
+        )
+    except OpValidationError as error:
+        return api_error(409, error.code, error.message)
+    except (OSError, RuntimeError, ValueError) as error:
+        return api_error(500, "JOB_FAILED", str(error))
