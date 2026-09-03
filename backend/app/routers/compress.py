@@ -6,11 +6,12 @@ from fastapi import APIRouter, Depends
 from sqlmodel import Session
 
 from app.config import get_settings
-from app.db import get_session
+from app.db import get_engine, get_session
 from app.errors import api_error
 from app.models import DocumentModel, JobModel
 from app.schemas import CompressEstimateResponse, CompressRequest, Job
 from app.services.compress import compress_pdf_file, estimate_compression
+from app.services.jobs import JobCancelledError, JobContext, start_job
 from app.services.oplog import OpValidationError, resolve_pdf_path
 from app.services.store import safe_path
 
@@ -58,7 +59,7 @@ def compress_document(
         id=str(uuid4()),
         document_id=document_id,
         kind="compress",
-        status="running",
+        status="queued",
         progress=0.0,
         created_at=now,
         updated_at=now,
@@ -67,69 +68,69 @@ def compress_document(
     session.commit()
     session.refresh(job)
 
-    try:
-        pdf_path = resolve_pdf_path(session, document, None)
+    def _run_compress(ctx: JobContext) -> None:
+        with Session(get_engine()) as worker:
+            live_doc = worker.get(DocumentModel, document_id)
+            if not live_doc:
+                raise ValueError("Document not found.")
+            pdf_path = resolve_pdf_path(worker, live_doc, None)
+
         source_size = Path(pdf_path).stat().st_size
-        result = compress_pdf_file(
-            source_path=Path(pdf_path),
-            profile=request.profile,
-            strip_metadata=request.stripMetadata,
-            image_dpi=request.imageDpi,
-        )
+        ctx.update_progress(0.05, "Preparing compression")
 
-        output = safe_path(
-            settings.store_root,
-            "documents",
-            document_id,
-            "derived",
-            f"compress-{job.id}.pdf",
-        )
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_bytes(result.data)
-
-        delta = source_size - result.output_bytes
-        if delta > 0:
-            reduction = (delta / source_size) * 100 if source_size else 0
-            message = (
-                f"Reduced {reduction:.1f}% "
-                f"({_format_bytes(source_size)} -> {_format_bytes(result.output_bytes)}) "
-                f"with profile '{request.profile}'."
+        try:
+            result = compress_pdf_file(
+                source_path=Path(pdf_path),
+                profile=request.profile,
+                strip_metadata=request.stripMetadata,
+                image_dpi=request.imageDpi,
+                progress_callback=lambda done, total: ctx.update_progress(
+                    0.1 + (0.75 * (done / max(1, total))),
+                    f"Compressing page {done}/{total}",
+                ),
+                cancel_callback=ctx.is_cancelled,
             )
-        else:
-            message = (
-                f"Output is larger "
-                f"({_format_bytes(source_size)} -> {_format_bytes(result.output_bytes)}); "
-                f"try profile 'strong'."
+            ctx.ensure_not_cancelled()
+
+            output = safe_path(
+                settings.store_root,
+                "documents",
+                document_id,
+                "derived",
+                f"compress-{job.id}.pdf",
             )
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(result.data)
 
-        if result.note:
-            message = f"{message} {result.note}"
+            delta = source_size - result.output_bytes
+            if delta > 0:
+                reduction = (delta / source_size) * 100 if source_size else 0
+                message = (
+                    f"Reduced {reduction:.1f}% "
+                    f"({_format_bytes(source_size)} -> {_format_bytes(result.output_bytes)}) "
+                    f"with profile '{request.profile}'."
+                )
+            else:
+                message = (
+                    f"Output is larger "
+                    f"({_format_bytes(source_size)} -> {_format_bytes(result.output_bytes)}); "
+                    f"try profile 'strong'."
+                )
 
-        job.status = "done"
-        job.progress = 1.0
-        job.message = message
-        job.result_path = str(output)
-        job.updated_at = _now()
-        session.add(job)
-        session.commit()
-        session.refresh(job)
-        return _job_schema(job)
-    except OpValidationError as error:
-        job.status = "error"
-        job.message = error.message
-        job.updated_at = _now()
-        session.add(job)
-        session.commit()
-        session.refresh(job)
-        return _job_schema(job)
-    except (OSError, RuntimeError, ValueError) as error:
-        job.status = "error"
-        job.message = str(error)
-        job.updated_at = _now()
-        session.add(job)
-        session.commit()
-        session.refresh(job)
-        return _job_schema(job)
+            if result.note:
+                message = f"{message} {result.note}"
+
+            ctx.complete(result_path=output, message=message)
+        except OpValidationError as error:
+            ctx.fail(error.message)
+        except (OSError, RuntimeError, ValueError) as error:
+            if "cancelled" in str(error).lower():
+                raise JobCancelledError("cancelled") from error
+            ctx.fail(str(error))
+
+    start_job(job.id, _run_compress)
+    session.refresh(job)
+    return _job_schema(job)
 
 
 @router.post("/{document_id}/compress/estimate", response_model=CompressEstimateResponse)

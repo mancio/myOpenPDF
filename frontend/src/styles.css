@@ -94,6 +94,11 @@ button:disabled {
   cursor: pointer;
 }
 
+.upload-secondary {
+  background: #0f7f6f;
+  border-color: #0a5a4f;
+}
+
 .zoom {
   min-width: 3.5rem;
   display: grid;
@@ -230,6 +235,71 @@ button:disabled {
   background: #fff;
 }
 
+.page-canvas-wrap {
+  position: relative;
+  width: fit-content;
+}
+
+.annotation-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.annotation-box {
+  position: absolute;
+  border: 1.6px dashed #1d62ce;
+  background: #1d62ce12;
+  pointer-events: auto;
+  padding: 0;
+  cursor: move;
+  touch-action: none;
+  user-select: none;
+}
+
+.annotation-box-selected {
+  border-style: solid;
+  border-width: 2px;
+  background: #1d62ce20;
+}
+
+.annotation-box-dragging {
+  box-shadow: 0 0 0 2px #7fb0ec;
+}
+
+.annotation-handle {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  background: #1d62ce;
+  border: 1px solid #fff;
+  border-radius: 2px;
+}
+
+.annotation-handle.tl {
+  left: -5px;
+  top: -5px;
+  cursor: nwse-resize;
+}
+
+.annotation-handle.tr {
+  right: -5px;
+  top: -5px;
+  cursor: nesw-resize;
+}
+
+.annotation-handle.bl {
+  left: -5px;
+  bottom: -5px;
+  cursor: nesw-resize;
+}
+
+.annotation-handle.br {
+  right: -5px;
+  bottom: -5px;
+  cursor: nwse-resize;
+}
+
 .pdf-page header {
   font-size: 0.82rem;
   color: var(--muted);
@@ -252,6 +322,24 @@ button:disabled {
   gap: 0.55rem;
 }
 
+.annotation-list {
+  display: grid;
+  gap: 0.35rem;
+  max-height: 9rem;
+  overflow: auto;
+}
+
+.annotation-row {
+  text-align: left;
+  font-size: 0.84rem;
+  background: #f6faff;
+}
+
+.annotation-row.active {
+  background: #d8ebff;
+  border-color: #84b8ef;
+}
+
 .field {
   display: grid;
   gap: 0.35rem;
@@ -259,8 +347,16 @@ button:disabled {
 }
 
 .field select,
-.field input[type='range'] {
+.field input[type='range'],
+.field input[type='text'] {
   width: 100%;
+}
+
+.field input[type='text'] {
+  border: 1px solid var(--stroke);
+  border-radius: 9px;
+  padding: 0.45rem 0.6rem;
+  font: inherit;
 }
 
 .checkbox-field {
@@ -290,6 +386,12 @@ button:disabled {
 
 .error {
   color: #b4232d;
+}
+
+.muted-small {
+  margin: 0.45rem 0 0;
+  color: var(--muted);
+  font-size: 0.83rem;
 }
 
 @media (max-width: 1260px) {

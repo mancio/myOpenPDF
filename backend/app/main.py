@@ -7,6 +7,7 @@ from app.config import get_settings
 from app.db import create_db_and_tables
 from app.routers.compress import router as compress_router
 from app.routers.documents import router as documents_router
+from app.routers.features import router as features_router
 from app.routers.health import router as health_router
 from app.routers.ops import router as ops_router
 from app.routers.scan import job_router, preset_router, scan_router
@@ -34,6 +35,7 @@ app.add_middleware(
 
 app.include_router(health_router, prefix="/api")
 app.include_router(documents_router, prefix="/api")
+app.include_router(features_router, prefix="/api")
 app.include_router(compress_router, prefix="/api")
 app.include_router(ops_router, prefix="/api")
 app.include_router(preset_router, prefix="/api")

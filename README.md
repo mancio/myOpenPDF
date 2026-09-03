@@ -2,12 +2,15 @@
 
 Local-first web PDF studio with a React frontend and FastAPI backend.
 
-Current progress follows M0 + M1 foundation + M2 scan skeleton:
+Current progress covers M0-M6 foundation:
 - upload PDFs
 - list documents in a local library
 - render documents in a browser with pdf.js
 - versioned file serving through op-log cursor
-- scan preview and scanned-PDF export job endpoint
+- page manager ops (rotate/delete/duplicate/insert blank/import/split/extract)
+- persisted annotations via op-log
+- scan preview/export + in-place scan apply
+- export and compression as background jobs with progress polling
 
 ## Stack
 - Backend: FastAPI, SQLModel, SQLite, PyMuPDF, Pillow, NumPy
@@ -59,16 +62,26 @@ pnpm build
 - `GET /api/documents/{id}/ops`
 - `POST /api/documents/{id}/undo`
 - `POST /api/documents/{id}/redo`
+- `GET /api/documents/{id}/annotations`
+- `POST /api/documents/{id}/assets`
+- `GET /api/documents/{id}/forms`
+- `POST /api/documents/{id}/export`
+- `POST /api/documents/{id}/extract`
+- `POST /api/documents/{id}/split`
 - `PATCH /api/documents/{id}`
 - `DELETE /api/documents/{id}`
 - `GET /api/scan/presets`
 - `POST /api/scan/presets`
 - `DELETE /api/scan/presets/{id}`
 - `POST /api/documents/{id}/scan/preview`
-- `POST /api/documents/{id}/scan` (export mode ready, in_place intentionally blocked)
+- `POST /api/documents/{id}/scan` (export + in_place)
+- `POST /api/documents/{id}/compress`
+- `POST /api/documents/{id}/compress/estimate`
 - `GET /api/jobs/{id}`
+- `GET /api/jobs/{id}/events`
+- `POST /api/jobs/{id}/cancel`
 - `GET /api/jobs/{id}/result`
 
 ## Notes
 - The repository is currently MIT-licensed as requested.
-- The code now uses PyMuPDF for M1/M2 foundations; verify licence compatibility strategy as features mature.
+- PyMuPDF has AGPL/commercial terms; before broad redistribution, obtain a compatible commercial licence or replace the PDF mutation engine.

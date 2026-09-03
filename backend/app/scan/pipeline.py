@@ -1,4 +1,5 @@
 import io
+from collections.abc import Callable
 from typing import Any
 
 import numpy as np
@@ -79,9 +80,20 @@ def page_preview_bytes(page: pymupdf.Page, params: ScanParams, preview_dpi: int,
     return buffer.getvalue()
 
 
-def export_document_bytes(doc: pymupdf.Document, params: ScanParams, seed: int) -> bytes:
+def export_document_bytes(
+    doc: pymupdf.Document,
+    params: ScanParams,
+    seed: int,
+    progress_callback: Callable[[int, int], None] | None = None,
+    cancel_callback: Callable[[], bool] | None = None,
+) -> bytes:
     out = pymupdf.open()
+    page_count = max(1, doc.page_count)
+
     for index in range(doc.page_count):
+        if cancel_callback and cancel_callback():
+            raise RuntimeError("Job cancelled")
+
         source_page = doc[index]
         image = _render_page(source_page, params.dpi)
         rng = np.random.default_rng([seed, index])
@@ -91,6 +103,9 @@ def export_document_bytes(doc: pymupdf.Document, params: ScanParams, seed: int) 
 
         page = out.new_page(width=source_page.rect.width, height=source_page.rect.height)
         page.insert_image(page.rect, stream=img_buf.getvalue())
+
+        if progress_callback:
+            progress_callback(index + 1, page_count)
 
     out.set_metadata({})
     out_buf = io.BytesIO()

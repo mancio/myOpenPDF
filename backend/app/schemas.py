@@ -147,6 +147,79 @@ class CompressEstimateResponse(BaseModel):
     note: str | None = None
 
 
+class AssetResponse(BaseModel):
+    assetId: str
+    filename: str
+    mimeType: str
+    pageCount: int | None = None
+    width: int | None = None
+    height: int | None = None
+
+
+class FormField(BaseModel):
+    page: str
+    name: str
+    field_type: Literal["text", "checkbox", "radio", "combo", "list", "signature"]
+    value: str | bool | int | None
+    rect: tuple[float, float, float, float] | None = None
+
+
+class ExportRequest(BaseModel):
+    format: Literal["pdf", "png", "jpeg"]
+    flatten: bool = False
+    pages: list[str] | None = None
+    dpi: int = Field(200, ge=72, le=600)
+
+
+class ExtractRequest(BaseModel):
+    pages: list[str] = Field(min_length=1)
+    title: str | None = None
+
+
+class SplitRequest(BaseModel):
+    splitAfterIndex: int = Field(ge=0)
+    leftTitle: str | None = None
+    rightTitle: str | None = None
+
+
+class AnnotationPayload(BaseModel):
+    id: str
+    page: str
+    kind: Literal[
+        "ink",
+        "highlight",
+        "underline",
+        "strikeout",
+        "rect",
+        "ellipse",
+        "line",
+        "freetext",
+        "note",
+        "stamp",
+        "image",
+    ]
+    rect: tuple[float, float, float, float] | None = None
+    text: str | None = None
+    color: tuple[float, float, float] | None = None
+    fill: tuple[float, float, float] | None = None
+    opacity: float = 1.0
+    width: float = 1.0
+    asset_id: str | None = None
+
+
+class RedactRequest(BaseModel):
+    page: str
+    rects: list[tuple[float, float, float, float]] = Field(min_length=1)
+    fill: tuple[float, float, float] | None = None
+
+
+class TextReplaceRequest(BaseModel):
+    page: str
+    old: str = Field(min_length=1)
+    new: str
+    rect: tuple[float, float, float, float] | None = None
+
+
 class Job(BaseModel):
     id: str
     document_id: str

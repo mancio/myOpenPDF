@@ -5,7 +5,8 @@ Written to be handed to a coding agent. Anything not specified here is the imple
 choice, but nothing specified here should be changed silently.
 
 - Runtime: FastAPI backend on `127.0.0.1`, React frontend, single user, no auth.
-- Licence: AGPL-3.0 (PyMuPDF dependency).
+- Licence: MIT for this repository; before broad redistribution, obtain a compatible
+  commercial PyMuPDF licence or replace the PDF mutation engine.
 - Browsers: desktop evergreen only.
 
 ---

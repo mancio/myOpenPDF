@@ -109,11 +109,11 @@ text selection, search and crisp zoom. pdf.js is read-only in this design; it ne
 | Packaging | `uv` for deps, single `docker compose` as an option | Reproducible env |
 | Testing | pytest + `pytest-asyncio` + `httpx.AsyncClient` | API and pipeline coverage |
 
-Licensing: pdf.js is Apache-2.0, fabric.js MIT, FastAPI MIT. **PyMuPDF is AGPL-3.0** (or a
-paid commercial licence). For a personal, locally-run, open-source tool that is fine, and
-the project itself should then be published under AGPL-3.0. If it is ever distributed as a
-hosted or closed product, swap the engine for `pypdf` + `pikepdf` (BSD/MPL) and accept a
-reduced feature set. This is a deliberate, recorded decision.
+Licensing: pdf.js is Apache-2.0, fabric.js MIT, FastAPI MIT. The repository licence is
+MIT. Because PyMuPDF has AGPL/commercial terms, the release strategy is explicit: keep
+this as a local-first MIT codebase for personal use, and before broad redistribution
+either obtain a compatible commercial PyMuPDF licence or replace the PDF mutation engine.
+This is a deliberate, recorded decision.
 
 ### 3.3 Scan effect
 
@@ -142,7 +142,7 @@ Added beyond the current script:
 | 2 | Deployment | Localhost only, single user, `127.0.0.1` bind |
 | 3 | Auth | None. No login, no accounts |
 | 4 | Storage | Persistent local library on disk + SQLite index, not ephemeral temp files |
-| 5 | Licensing / SDK | Fully open source, no commercial SDK. Project is AGPL-3.0 because of PyMuPDF |
+| 5 | Licensing / SDK | Project licence remains MIT; redistribution requires commercial PyMuPDF licensing or engine replacement |
 | 6 | Browsers | Desktop evergreen only (Chrome, Edge, Firefox, Safari). No mobile work |
 | 7 | Scan fidelity | Must look convincing and be a real raster on save, with tunable parameters per scan type. No pixel-parity requirement against the Python script |
 | 8 | Existing-text editing | Best-effort single-span replace via PyMuPDF redaction + font substitution. Reflow is out of scope |
@@ -188,7 +188,7 @@ signatures.
 | Corrupt or malicious PDFs | DoS, parser crash | Size and page caps, MIME sniff, per-request timeout, `isEvalSupported: false` in pdf.js, PDF JavaScript disabled |
 | Local server exposed beyond the machine | Data exposure | Bind `127.0.0.1` only, strict CORS allowlist to the Vite origin, no `0.0.0.0` default |
 | Path traversal via document ids or filenames | Arbitrary file read/write | Ids are UUIDs, never user filenames; every path resolved and asserted to be inside the store root |
-| PyMuPDF AGPL obligation | Licensing | Project published AGPL-3.0; recorded in section 3.2 |
+| PyMuPDF redistribution obligation | Licensing | Keep MIT repo for local use; require commercial PyMuPDF licence or engine swap before broad redistribution |
 | Scan feature misused for forgery | Legal, reputational | Usage notice in the panel, no signature stripping, optional provenance metadata |
 | Font licensing when embedding | Legal | Standard 14 plus bundled open fonts only |
 | Over-compression hurts readability | Poor output quality | Use conservative defaults, expose profile descriptions and estimated size/quality trade-off before apply |

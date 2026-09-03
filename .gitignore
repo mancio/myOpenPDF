@@ -14,6 +14,7 @@ coverage/
 
 # Local data
 backend/data/
+backend/data-e2e/
 
 # Editor / OS
 .vscode/
@@ -22,3 +23,9 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Playwright
+playwright-report/
+test-results/
+frontend/playwright-report/
+frontend/test-results/

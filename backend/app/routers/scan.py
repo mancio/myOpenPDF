@@ -1,15 +1,16 @@
 import json
+import mimetypes
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
 import pymupdf
 from fastapi import APIRouter, Depends
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from sqlmodel import Session, select
 
 from app.config import get_settings
-from app.db import get_session
+from app.db import get_engine, get_session
 from app.errors import api_error
 from app.models import DocumentModel, JobModel, PresetModel
 from app.scan.params import BUILTIN_PRESETS
@@ -17,11 +18,26 @@ from app.scan.pipeline import export_document_bytes, page_preview_bytes
 from app.schemas import (
     CreatePresetRequest,
     Job,
+    OpRequest,
     Preset,
     ScanPreviewRequest,
     ScanRunRequest,
 )
-from app.services.oplog import OpValidationError, build_state, resolve_pdf_path
+from app.services.jobs import (
+    JobCancelledError,
+    JobContext,
+    start_job,
+    stream_job_events,
+)
+from app.services.jobs import (
+    cancel_job as request_job_cancel,
+)
+from app.services.oplog import (
+    OpValidationError,
+    append_op,
+    build_state,
+    resolve_pdf_path,
+)
 from app.services.store import safe_path
 
 scan_router = APIRouter(prefix="/documents", tags=["scan"])
@@ -125,15 +141,12 @@ def scan_document(document_id: str, request: ScanRunRequest, session: Session = 
     if not document:
         return api_error(404, "NOT_FOUND", "Document not found.")
 
-    if request.mode == "in_place":
-        return api_error(409, "UNSUPPORTED_FEATURE", "In-place scan op is not enabled yet.")
-
     now = _now()
     job = JobModel(
         id=str(uuid4()),
         document_id=document_id,
         kind="scan",
-        status="running",
+        status="queued",
         progress=0.0,
         created_at=now,
         updated_at=now,
@@ -142,35 +155,74 @@ def scan_document(document_id: str, request: ScanRunRequest, session: Session = 
     session.commit()
     session.refresh(job)
 
-    try:
-        pdf_path = resolve_pdf_path(session, document, None)
+    if request.mode == "in_place":
+        try:
+            params = request.params.model_dump()
+            if params.get("seed") is None:
+                params["seed"] = int(uuid4().int & 0x7FFFFFFF)
+
+            append_op(
+                session,
+                document,
+                OpRequest(kind="scan.apply", payload={"params": params}),
+            )
+
+            job.status = "done"
+            job.progress = 1.0
+            job.message = "In-place scan committed and undo/redo disabled for this branch."
+            job.updated_at = _now()
+            session.add(job)
+            session.commit()
+            session.refresh(job)
+            return _job_schema(job)
+        except OpValidationError as error:
+            job.status = "error"
+            job.message = error.message
+            job.updated_at = _now()
+            session.add(job)
+            session.commit()
+            session.refresh(job)
+            return _job_schema(job)
+
+    seed = request.params.seed if request.params.seed is not None else int(uuid4().int & 0x7FFFFFFF)
+
+    def _run_scan_export(ctx: JobContext) -> None:
+        with Session(get_engine()) as worker:
+            live_doc = worker.get(DocumentModel, document_id)
+            if not live_doc:
+                raise ValueError("Document not found.")
+            pdf_path = resolve_pdf_path(worker, live_doc, None)
+
         doc = pymupdf.open(pdf_path)
-        seed = request.params.seed if request.params.seed is not None else int(uuid4().int & 0x7FFFFFFF)
-        data = export_document_bytes(doc, request.params, seed)
-        doc.close()
+        try:
+            ctx.update_progress(0.04, "Preparing scan export")
+            data = export_document_bytes(
+                doc,
+                request.params,
+                seed,
+                progress_callback=lambda done, total: ctx.update_progress(
+                    0.08 + (0.84 * (done / max(1, total))),
+                    f"Scanning page {done}/{total}",
+                ),
+                cancel_callback=ctx.is_cancelled,
+            )
+            ctx.ensure_not_cancelled()
 
-        settings = get_settings()
-        output = safe_path(settings.store_root, "documents", document_id, "derived", f"scan-{job.id}.pdf")
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_bytes(data)
+            settings = get_settings()
+            output = safe_path(settings.store_root, "documents", document_id, "derived", f"scan-{job.id}.pdf")
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(data)
+            ctx.complete(result_path=output, message=f"Completed with seed {seed}.")
+        except (OSError, RuntimeError, ValueError) as error:
+            if "cancelled" in str(error).lower():
+                raise JobCancelledError("cancelled") from error
+            ctx.fail(str(error))
+        finally:
+            doc.close()
 
-        job.status = "done"
-        job.progress = 1.0
-        job.message = f"Completed with seed {seed}."
-        job.result_path = str(output)
-        job.updated_at = _now()
-        session.add(job)
-        session.commit()
-        session.refresh(job)
-        return _job_schema(job)
-    except (OSError, RuntimeError, ValueError) as error:
-        job.status = "error"
-        job.message = str(error)
-        job.updated_at = _now()
-        session.add(job)
-        session.commit()
-        session.refresh(job)
-        return _job_schema(job)
+    start_job(job.id, _run_scan_export)
+    session.refresh(job)
+    return _job_schema(job)
 
 
 @job_router.get("/{job_id}", response_model=Job)
@@ -179,6 +231,30 @@ def get_job(job_id: str, session: Session = Depends(get_session)):
     if not job:
         return api_error(404, "NOT_FOUND", "Job not found.")
     return _job_schema(job)
+
+
+@job_router.get("/{job_id}/events")
+def get_job_events(job_id: str, session: Session = Depends(get_session)):
+    job = session.get(JobModel, job_id)
+    if not job:
+        return api_error(404, "NOT_FOUND", "Job not found.")
+
+    return StreamingResponse(
+        stream_job_events(job_id),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+@job_router.post("/{job_id}/cancel", status_code=202)
+def cancel_job_endpoint(job_id: str, session: Session = Depends(get_session)):
+    if not session.get(JobModel, job_id):
+        return api_error(404, "NOT_FOUND", "Job not found.")
+    request_job_cancel(job_id)
+    return {"accepted": True}
 
 
 @job_router.get("/{job_id}/result")
@@ -192,4 +268,10 @@ def get_job_result(job_id: str, session: Session = Depends(get_session)):
     path = Path(job.result_path)
     if not path.exists():
         return api_error(404, "NOT_FOUND", "Result file is missing.")
-    return FileResponse(path=path, media_type="application/pdf", filename=path.name)
+
+    mime_type, _ = mimetypes.guess_type(path.name)
+    return FileResponse(
+        path=path,
+        media_type=mime_type or "application/octet-stream",
+        filename=path.name,
+    )

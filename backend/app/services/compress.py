@@ -1,4 +1,5 @@
 import io
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -43,12 +44,22 @@ def _compress_lossless(
     return buffer.getvalue()
 
 
-def _compress_strong(doc: pymupdf.Document, strip_metadata: bool, image_dpi: int) -> tuple[bytes, str]:
+def _compress_strong(
+    doc: pymupdf.Document,
+    strip_metadata: bool,
+    image_dpi: int,
+    progress_callback: Callable[[int, int], None] | None = None,
+    cancel_callback: Callable[[], bool] | None = None,
+) -> tuple[bytes, str]:
     out = pymupdf.open()
     scale = image_dpi / 72.0
     matrix = pymupdf.Matrix(scale, scale)
+    page_count = max(1, doc.page_count)
 
     for index in range(doc.page_count):
+        if cancel_callback and cancel_callback():
+            raise RuntimeError("Job cancelled")
+
         page = doc[index]
         pix = page.get_pixmap(matrix=matrix, colorspace=pymupdf.csRGB, alpha=False)
         image = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
@@ -58,6 +69,9 @@ def _compress_strong(doc: pymupdf.Document, strip_metadata: bool, image_dpi: int
 
         new_page = out.new_page(width=page.rect.width, height=page.rect.height)
         new_page.insert_image(new_page.rect, stream=img_buf.getvalue())
+
+        if progress_callback:
+            progress_callback(index + 1, page_count)
 
     if strip_metadata:
         out.set_metadata({})
@@ -73,6 +87,8 @@ def compress_pdf_file(
     profile: Literal["light", "balanced", "strong"],
     strip_metadata: bool,
     image_dpi: int,
+    progress_callback: Callable[[int, int], None] | None = None,
+    cancel_callback: Callable[[], bool] | None = None,
 ) -> CompressionResult:
     doc = pymupdf.open(source_path)
     try:
@@ -80,7 +96,13 @@ def compress_pdf_file(
             data = _compress_lossless(doc, strip_metadata, profile)
             return CompressionResult(data=data, output_bytes=len(data), note=None)
 
-        data, note = _compress_strong(doc, strip_metadata, image_dpi)
+        data, note = _compress_strong(
+            doc,
+            strip_metadata,
+            image_dpi,
+            progress_callback=progress_callback,
+            cancel_callback=cancel_callback,
+        )
         return CompressionResult(data=data, output_bytes=len(data), note=note)
     finally:
         doc.close()
