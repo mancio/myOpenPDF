@@ -117,6 +117,23 @@ function buildAnnotationPayload(item: AnnotationItem, rect: RectTuple | null): R
   };
 }
 
+async function readApiError(response: Response, fallback: string): Promise<string> {
+  try {
+    const payload = (await response.json()) as { error?: { code?: string; message?: string } };
+    const message = payload.error?.message?.trim();
+    const code = payload.error?.code?.trim();
+    if (message && code) {
+      return `${fallback}: ${message} (${code})`;
+    }
+    if (message) {
+      return `${fallback}: ${message}`;
+    }
+  } catch {
+    // Ignore parse errors and return fallback.
+  }
+  return fallback;
+}
+
 async function waitForJob(
   jobId: string,
   onProgress: (message: string) => void,
@@ -243,11 +260,18 @@ export function App() {
   const [viewerViewportHeight, setViewerViewportHeight] = useState(0);
 
   const viewerRef = useRef<HTMLDivElement | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
   const canvasRefs = useRef<Record<string, HTMLCanvasElement | null>>({});
   const renderCycleRef = useRef(0);
   const renderTaskRefs = useRef<Record<string, { cancel: () => void }>>({});
   const dragStateRef = useRef<AnnotationDragState | null>(null);
   const annotationsRef = useRef<AnnotationItem[]>([]);
+  const pendingViewerScrollRef = useRef<{ scrollTop: number; viewportHeight: number } | null>(null);
+  const pendingThumbScrollRef = useRef<{ scrollHeight: number; scrollTop: number; clientHeight: number } | null>(
+    null
+  );
+  const viewerScrollFrameRef = useRef<number | null>(null);
+  const thumbsScrollFrameRef = useRef<number | null>(null);
 
   const selectedDoc = useMemo(
     () => docs.find((doc) => doc.id === selectedDocumentId) ?? null,
@@ -402,6 +426,81 @@ export function App() {
   }, [annotations]);
 
   useEffect(() => {
+    return () => {
+      if (viewerScrollFrameRef.current !== null) {
+        window.cancelAnimationFrame(viewerScrollFrameRef.current);
+        viewerScrollFrameRef.current = null;
+      }
+      if (thumbsScrollFrameRef.current !== null) {
+        window.cancelAnimationFrame(thumbsScrollFrameRef.current);
+        thumbsScrollFrameRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target instanceof HTMLElement ? event.target : null;
+      const tagName = target?.tagName?.toLowerCase() ?? '';
+      const inTextInput =
+        !!target &&
+        (target.isContentEditable || tagName === 'input' || tagName === 'textarea' || tagName === 'select');
+      const withCommand = event.ctrlKey || event.metaKey;
+      const key = event.key.toLowerCase();
+
+      if (withCommand && key === 'f') {
+        event.preventDefault();
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+        return;
+      }
+
+      if (inTextInput) {
+        return;
+      }
+
+      if (withCommand && key === 'z' && event.shiftKey) {
+        event.preventDefault();
+        void runRedo();
+        return;
+      }
+
+      if (withCommand && key === 'z') {
+        event.preventDefault();
+        void runUndo();
+        return;
+      }
+
+      if (withCommand && key === 'y') {
+        event.preventDefault();
+        void runRedo();
+        return;
+      }
+
+      if (withCommand && (key === '+' || key === '=')) {
+        event.preventDefault();
+        setZoom((value) => Math.min(3, value + 0.1));
+        return;
+      }
+
+      if (withCommand && key === '-') {
+        event.preventDefault();
+        setZoom((value) => Math.max(0.4, value - 0.1));
+        return;
+      }
+
+      if (key === 'escape' && error) {
+        setError(null);
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [error, selectedDocumentId]);
+
+  useEffect(() => {
     if (!selectedDocumentId) {
       setPages([]);
       setForms([]);
@@ -551,32 +650,59 @@ export function App() {
   }
 
   function onViewerScroll(event: UIEvent<HTMLDivElement>) {
-    const scrollTop = event.currentTarget.scrollTop;
-    const viewportHeight = event.currentTarget.clientHeight;
-    setViewerScrollTop(scrollTop);
-    setViewerViewportHeight(viewportHeight);
-
-    if (!pages.length) {
+    pendingViewerScrollRef.current = {
+      scrollTop: event.currentTarget.scrollTop,
+      viewportHeight: event.currentTarget.clientHeight,
+    };
+    if (viewerScrollFrameRef.current !== null) {
       return;
     }
+    viewerScrollFrameRef.current = window.requestAnimationFrame(() => {
+      viewerScrollFrameRef.current = null;
+      const pending = pendingViewerScrollRef.current;
+      if (!pending) {
+        return;
+      }
 
-    const center = scrollTop + viewportHeight / 2;
-    let index = 0;
-    while (index < pages.length - 1 && viewerMetrics.offsets[index + 1] < center) {
-      index += 1;
-    }
-    const page = pages[index];
-    if (page && page.uuid !== activePage) {
-      setActivePage(page.uuid);
-    }
+      setViewerScrollTop(pending.scrollTop);
+      setViewerViewportHeight(pending.viewportHeight);
+
+      if (!pages.length) {
+        return;
+      }
+
+      const center = pending.scrollTop + pending.viewportHeight / 2;
+      let index = 0;
+      while (index < pages.length - 1 && viewerMetrics.offsets[index + 1] < center) {
+        index += 1;
+      }
+      const page = pages[index];
+      if (page && page.uuid !== activePage) {
+        setActivePage(page.uuid);
+      }
+    });
   }
 
   function onThumbsScroll(event: UIEvent<HTMLDivElement>) {
-    const element = event.currentTarget;
-    const distanceToBottom = element.scrollHeight - (element.scrollTop + element.clientHeight);
-    if (distanceToBottom < 120) {
-      setThumbVisibleCount((current) => Math.min(pages.length, current + THUMB_CHUNK_SIZE));
+    pendingThumbScrollRef.current = {
+      scrollHeight: event.currentTarget.scrollHeight,
+      scrollTop: event.currentTarget.scrollTop,
+      clientHeight: event.currentTarget.clientHeight,
+    };
+    if (thumbsScrollFrameRef.current !== null) {
+      return;
     }
+    thumbsScrollFrameRef.current = window.requestAnimationFrame(() => {
+      thumbsScrollFrameRef.current = null;
+      const pending = pendingThumbScrollRef.current;
+      if (!pending) {
+        return;
+      }
+      const distanceToBottom = pending.scrollHeight - (pending.scrollTop + pending.clientHeight);
+      if (distanceToBottom < 120) {
+        setThumbVisibleCount((current) => Math.min(pages.length, current + THUMB_CHUNK_SIZE));
+      }
+    });
   }
 
   function computeDraggedRect(drag: AnnotationDragState, clientX: number, clientY: number): RectTuple {
@@ -884,7 +1010,7 @@ export function App() {
       body: form,
     });
     if (!response.ok) {
-      setAnnotationStatus('Stamp upload failed');
+      setAnnotationStatus(await readApiError(response, 'Stamp upload failed'));
       return;
     }
 
@@ -910,7 +1036,7 @@ export function App() {
       body: JSON.stringify({ query, caseSensitive: false }),
     });
     if (!response.ok) {
-      setError('Search failed');
+      setError(await readApiError(response, 'Search failed'));
       return;
     }
     const hits = (await response.json()) as SearchHit[];
@@ -932,7 +1058,7 @@ export function App() {
     form.append('file', file);
     const response = await fetch('/api/documents', { method: 'POST', body: form });
     if (!response.ok) {
-      setError('Upload failed');
+      setError(await readApiError(response, 'Upload failed'));
       return;
     }
     const created = (await response.json()) as DocumentItem;
@@ -953,7 +1079,7 @@ export function App() {
       body: JSON.stringify({ kind, payload }),
     });
     if (!response.ok) {
-      setOpStatus(`${kind} failed`);
+      setOpStatus(await readApiError(response, `${kind} failed`));
       return false;
     }
 
@@ -1027,7 +1153,7 @@ export function App() {
       body: form,
     });
     if (!upload.ok) {
-      setOpStatus('Import upload failed');
+      setOpStatus(await readApiError(upload, 'Import upload failed'));
       return;
     }
 
@@ -1095,7 +1221,7 @@ export function App() {
     });
 
     if (!response.ok) {
-      setScanStatus('Preview failed');
+      setScanStatus(await readApiError(response, 'Preview failed'));
       return;
     }
 
@@ -1119,7 +1245,7 @@ export function App() {
       body: JSON.stringify({ mode: 'export', params: defaultScanParams }),
     });
     if (!response.ok) {
-      setScanStatus('Scan export failed');
+      setScanStatus(await readApiError(response, 'Scan export failed'));
       return;
     }
 
@@ -1163,7 +1289,7 @@ export function App() {
       body: JSON.stringify({ mode: 'in_place', params: defaultScanParams }),
     });
     if (!response.ok) {
-      setScanStatus('In-place scan failed');
+      setScanStatus(await readApiError(response, 'In-place scan failed'));
       return;
     }
 
@@ -1242,7 +1368,7 @@ export function App() {
       }),
     });
     if (!response.ok) {
-      setExportStatus('Export failed');
+      setExportStatus(await readApiError(response, 'Export failed'));
       return;
     }
 
@@ -1293,7 +1419,7 @@ export function App() {
     });
 
     if (!response.ok) {
-      setCompressStatus('Compression failed');
+      setCompressStatus(await readApiError(response, 'Compression failed'));
       return;
     }
 
@@ -1335,7 +1461,7 @@ export function App() {
     });
 
     if (!response.ok) {
-      setCompressStatus('Estimate failed');
+      setCompressStatus(await readApiError(response, 'Estimate failed'));
       setCompressEstimate(null);
       return;
     }
@@ -1384,6 +1510,9 @@ export function App() {
       <header className="header">
         <h1>myOpenPDF</h1>
         <p>M1 to M6 foundation: viewer, page manager, scan effects, flatten, extract/split, and export/compress flows.</p>
+        <p className="muted-small shortcut-hint">
+          Shortcuts: Ctrl/Cmd+F search, Ctrl/Cmd+Z undo, Ctrl/Cmd+Shift+Z redo, Ctrl/Cmd +/- zoom, Esc clear error.
+        </p>
       </header>
 
       <section className="toolbar">
@@ -1422,8 +1551,14 @@ export function App() {
           Split After Active
         </button>
         <button type="button" onClick={() => void runFlatten()} disabled={!selectedDocumentId}>Flatten</button>
-        <button type="button" onClick={() => void runUndo()}>Undo</button>
-        <button type="button" onClick={() => void runRedo()}>Redo</button>
+        <button type="button" onClick={() => void runUndo()} aria-keyshortcuts="Control+Z Meta+Z">Undo</button>
+        <button
+          type="button"
+          onClick={() => void runRedo()}
+          aria-keyshortcuts="Control+Shift+Z Meta+Shift+Z Control+Y"
+        >
+          Redo
+        </button>
         <button type="button" onClick={() => void cancelCurrentJob()} disabled={!currentJobId}>
           Cancel Running Job
         </button>
@@ -1443,8 +1578,19 @@ export function App() {
         </label>
       </section>
 
-      {error && <p className="error">{error}</p>}
-      {opStatus && <p>{opStatus}</p>}
+      {error && (
+        <div className="error-banner" role="alert" aria-live="assertive">
+          <span>{error}</span>
+          <button type="button" onClick={() => setError(null)}>
+            Dismiss
+          </button>
+        </div>
+      )}
+      {opStatus && (
+        <p className="muted-small" role="status" aria-live="polite">
+          {opStatus}
+        </p>
+      )}
 
       <section className="workspace">
         <aside className="sidebar">
@@ -1503,7 +1649,9 @@ export function App() {
         <section className="viewer-section">
           <div className="search-row">
             <input
+              ref={searchInputRef}
               type="text"
+              aria-label="Search text"
               placeholder="Search text"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
@@ -1612,7 +1760,7 @@ export function App() {
           <button type="button" onClick={() => void applyScanInPlace()} disabled={!selectedDocumentId}>
             Apply Scan In Place
           </button>
-          <p>{scanStatus}</p>
+          <p role="status" aria-live="polite">{scanStatus}</p>
           {scanPreviewUrl && <img src={scanPreviewUrl} alt="Scan preview" className="scan-preview" />}
 
           <h2>Forms</h2>
@@ -1684,7 +1832,7 @@ export function App() {
             ))}
             {activePageAnnotations.length === 0 && <p className="muted-small">No annotations on active page.</p>}
           </div>
-          <p>{annotationStatus}</p>
+          <p role="status" aria-live="polite">{annotationStatus}</p>
 
           <h2>Export</h2>
           <label className="field">
@@ -1728,7 +1876,7 @@ export function App() {
           <button type="button" onClick={() => void runExport()} disabled={!selectedDocumentId}>
             Export File
           </button>
-          <p>{exportStatus}</p>
+          <p role="status" aria-live="polite">{exportStatus}</p>
 
           <h2>Reduce File Size</h2>
           <p className="notice">Profiles mirror online tools: light, balanced, strong.</p>
@@ -1784,7 +1932,7 @@ export function App() {
             </div>
           )}
 
-          <p>{compressStatus}</p>
+          <p role="status" aria-live="polite">{compressStatus}</p>
         </aside>
       </section>
     </main>

@@ -1,5 +1,7 @@
 import { defineConfig } from '@playwright/test';
 
+const backendPython = process.platform === 'win32' ? '..\\.venv\\Scripts\\python.exe' : '../.venv/bin/python';
+
 export default defineConfig({
   testDir: './e2e',
   timeout: 120_000,
@@ -17,7 +19,7 @@ export default defineConfig({
   },
   webServer: [
     {
-      command: '..\\.venv\\Scripts\\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000',
+      command: `${backendPython} -m uvicorn app.main:app --host 127.0.0.1 --port 8000`,
       cwd: '../backend',
       env: {
         PDFSTUDIO_STORE_ROOT: './data-e2e',

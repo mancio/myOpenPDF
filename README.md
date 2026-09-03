@@ -45,8 +45,17 @@ ruff check .
 pytest
 
 cd ../frontend
+pnpm test -- --run
+pnpm test:e2e
 pnpm build
 ```
+
+## Keyboard Shortcuts
+- `Ctrl/Cmd+F`: focus search
+- `Ctrl/Cmd+Z`: undo
+- `Ctrl/Cmd+Shift+Z` or `Ctrl+Y`: redo
+- `Ctrl/Cmd++` and `Ctrl/Cmd+-`: zoom in/out
+- `Esc`: dismiss current error banner
 
 ## API Implemented
 - `GET /api/health`

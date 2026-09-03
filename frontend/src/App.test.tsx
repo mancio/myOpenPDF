@@ -146,6 +146,16 @@ function createFetchMock(state: MockState) {
       return jsonResponse({ id: 'job-1', status: 'queued', progress: 0, message: null });
     }
 
+    if (method === 'POST' && url.pathname === '/api/documents/doc-1/undo') {
+      state.version = Math.max(0, state.version - 1);
+      return jsonResponse({ version: state.version, cursor: state.version });
+    }
+
+    if (method === 'POST' && url.pathname === '/api/documents/doc-1/redo') {
+      state.version += 1;
+      return jsonResponse({ version: state.version, cursor: state.version });
+    }
+
     if (method === 'GET' && url.pathname === '/api/jobs/job-1') {
       state.jobPolls += 1;
       if (state.jobPolls < 2) {
@@ -247,6 +257,45 @@ describe('App flows', () => {
         return typeof init.body === 'string' && init.body.includes('"kind":"annot.update"');
       });
       expect(didPersistUpdate).toBe(true);
+    });
+  });
+
+  test('supports search focus and undo/redo keyboard shortcuts', async () => {
+    const state: MockState = { version: 0, pageCount: 1, annotations: [], jobPolls: 0 };
+    const fetchMock = createFetchMock(state);
+    globalThis.fetch = fetchMock;
+
+    render(<App />);
+    await screen.findByText('Sample');
+
+    const searchInput = screen.getByLabelText('Search text') as HTMLInputElement;
+    expect(document.activeElement).not.toBe(searchInput);
+
+    fireEvent.keyDown(document, { key: 'f', ctrlKey: true });
+    await waitFor(() => {
+      expect(document.activeElement).toBe(searchInput);
+    });
+
+    fireEvent.keyDown(document, { key: 'z', ctrlKey: true });
+    fireEvent.keyDown(document, { key: 'z', ctrlKey: true, shiftKey: true });
+
+    await waitFor(() => {
+      const calledUndo = fetchMock.mock.calls.some(([rawUrl, init]) => {
+        if (!init || init.method !== 'POST') {
+          return false;
+        }
+        const url = new URL(typeof rawUrl === 'string' ? rawUrl : rawUrl.toString(), 'http://127.0.0.1:5173');
+        return url.pathname === '/api/documents/doc-1/undo';
+      });
+      const calledRedo = fetchMock.mock.calls.some(([rawUrl, init]) => {
+        if (!init || init.method !== 'POST') {
+          return false;
+        }
+        const url = new URL(typeof rawUrl === 'string' ? rawUrl : rawUrl.toString(), 'http://127.0.0.1:5173');
+        return url.pathname === '/api/documents/doc-1/redo';
+      });
+      expect(calledUndo).toBe(true);
+      expect(calledRedo).toBe(true);
     });
   });
 });

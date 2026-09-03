@@ -42,6 +42,10 @@ body {
   color: var(--muted);
 }
 
+.shortcut-hint {
+  margin-top: 0.35rem;
+}
+
 .toolbar {
   display: flex;
   flex-wrap: wrap;
@@ -386,6 +390,24 @@ button:disabled {
 
 .error {
   color: #b4232d;
+}
+
+.error-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin: 0 0 0.7rem;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid #e79ea5;
+  border-radius: 10px;
+  background: #fff1f2;
+  color: #8f1c2a;
+}
+
+.error-banner button {
+  background: #fff;
+  border-color: #e79ea5;
 }
 
 .muted-small {

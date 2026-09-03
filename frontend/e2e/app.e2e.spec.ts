@@ -13,6 +13,46 @@ function asRectTuple(value: unknown): RectTuple | null {
   return [values[0], values[1], values[2], values[3]];
 }
 
+async function dispatchPointerDragOnElement(page: import('@playwright/test').Page, selector: string, dx: number, dy: number) {
+  await page.locator(selector).first().evaluate((node, data: { dx: number; dy: number }) => {
+    const element = node as HTMLElement;
+    const rect = element.getBoundingClientRect();
+    const pointerId = 33;
+    const startX = rect.left + rect.width / 2;
+    const startY = rect.top + rect.height / 2;
+
+    element.dispatchEvent(
+      new PointerEvent('pointerdown', {
+        bubbles: true,
+        pointerId,
+        button: 0,
+        clientX: startX,
+        clientY: startY,
+      })
+    );
+
+    window.dispatchEvent(
+      new PointerEvent('pointermove', {
+        bubbles: true,
+        pointerId,
+        buttons: 1,
+        clientX: startX + data.dx,
+        clientY: startY + data.dy,
+      })
+    );
+
+    window.dispatchEvent(
+      new PointerEvent('pointerup', {
+        bubbles: true,
+        pointerId,
+        button: 0,
+        clientX: startX + data.dx,
+        clientY: startY + data.dy,
+      })
+    );
+  }, { dx, dy });
+}
+
 function buildPdf(pageCount: number): Buffer {
   const pageObjects: string[] = [];
   const kids: string[] = [];
@@ -66,10 +106,6 @@ function buildPdf(pageCount: number): Buffer {
 }
 
 test('upload, annotate, export, and request cancel', async ({ page }) => {
-  await page.route(/\/api\/documents\/[^/]+\/pages\/[^/]+\/thumb\?.*$/, async (route) => {
-    await route.fulfill({ status: 204, body: '' });
-  });
-
   await page.goto('/');
 
   const docName = `sample-e2e-${Date.now()}.pdf`;
@@ -109,10 +145,7 @@ test('upload, annotate, export, and request cancel', async ({ page }) => {
     return request.postData()?.includes('"kind":"annot.update"') ?? false;
   });
 
-  await page.mouse.move(initial.x + initial.width / 2, initial.y + initial.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(initial.x + initial.width / 2 + 28, initial.y + initial.height / 2 + 18);
-  await page.mouse.up();
+  await dispatchPointerDragOnElement(page, '.annotation-box', 28, 18);
   await dragPersisted;
 
   const brHandle = page.locator('.annotation-box-selected .annotation-handle.br').first();
@@ -121,10 +154,7 @@ test('upload, annotate, export, and request cancel', async ({ page }) => {
     throw new Error('Resize handle is not measurable');
   }
 
-  await page.mouse.move(handlePoint.x + handlePoint.width / 2, handlePoint.y + handlePoint.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(handlePoint.x + handlePoint.width / 2 + 30, handlePoint.y + handlePoint.height / 2 + 24);
-  await page.mouse.up();
+  await dispatchPointerDragOnElement(page, '.annotation-box-selected .annotation-handle.br', 30, 24);
 
   const [download] = await Promise.all([
     page.waitForEvent('download'),
@@ -147,10 +177,6 @@ test('upload, annotate, export, and request cancel', async ({ page }) => {
 });
 
 test('persists corner resize with payload rect delta', async ({ page }) => {
-  await page.route(/\/api\/documents\/[^/]+\/pages\/[^/]+\/thumb\?.*$/, async (route) => {
-    await route.fulfill({ status: 204, body: '' });
-  });
-
   let addedRect: RectTuple | null = null;
   const updatedRects: RectTuple[] = [];
   page.on('request', (request) => {
@@ -227,10 +253,7 @@ test('persists corner resize with payload rect delta', async ({ page }) => {
     return request.postData()?.includes('"kind":"annot.update"') ?? false;
   });
 
-  await page.mouse.move(handlePoint.x + handlePoint.width / 2, handlePoint.y + handlePoint.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(handlePoint.x + handlePoint.width / 2 + 34, handlePoint.y + handlePoint.height / 2 + 26);
-  await page.mouse.up();
+  await dispatchPointerDragOnElement(page, '.annotation-box-selected .annotation-handle.br', 34, 26);
   await resizePersisted;
 
   await expect.poll(() => updatedRects.length).toBeGreaterThan(0);
@@ -245,4 +268,38 @@ test('persists corner resize with payload rect delta', async ({ page }) => {
 
   expect(resizedWidth).toBeGreaterThan(baseWidth + 1);
   expect(resizedHeight).toBeGreaterThan(baseHeight + 1);
+});
+
+test('loads real thumbnail responses from backend', async ({ page }) => {
+  await page.goto('/');
+
+  const docName = `sample-e2e-thumb-${Date.now()}.pdf`;
+  const docTitle = docName.replace(/\.pdf$/i, '');
+  const thumbResponsePromise = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'GET' &&
+      /\/api\/documents\/[^/]+\/pages\/[^/]+\/thumb\?/.test(response.url()) &&
+      response.status() === 200
+  );
+
+  const uploadInput = page.locator('label.upload input[type="file"]').first();
+  await uploadInput.setInputFiles({
+    name: docName,
+    mimeType: 'application/pdf',
+    buffer: buildPdf(1),
+  });
+
+  const docButton = page.getByRole('button', { name: new RegExp(`${docTitle}.*1 pages`, 'i') }).first();
+  await expect(docButton).toBeVisible();
+  await docButton.click();
+
+  const thumbResponse = await thumbResponsePromise;
+  const contentType = thumbResponse.headers()['content-type'] ?? '';
+  expect(contentType).toContain('image/webp');
+
+  const image = page.locator('.thumb img').first();
+  await expect(image).toBeVisible();
+  await expect
+    .poll(async () => image.evaluate((node) => (node as HTMLImageElement).naturalWidth))
+    .toBeGreaterThan(0);
 });

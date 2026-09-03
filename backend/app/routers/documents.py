@@ -25,6 +25,7 @@ from app.schemas import (
     TextBlock,
     UpdateDocumentRequest,
 )
+from app.services.locks import keyed_lock
 from app.services.oplog import OpValidationError, build_state, resolve_pdf_path
 from app.services.store import document_dir, original_pdf_path, safe_path, thumb_path
 
@@ -286,14 +287,25 @@ def get_page_thumbnail(
     if cached.exists():
         return FileResponse(path=cached, media_type="image/webp", filename=f"{page_uuid}.webp")
 
-    cached.parent.mkdir(parents=True, exist_ok=True)
-    doc = pymupdf.open(pdf_path)
-    page = doc[page_index]
-    scale = dpi / 72.0
-    pix = page.get_pixmap(matrix=pymupdf.Matrix(scale, scale), colorspace=pymupdf.csRGB, alpha=False)
-    img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-    img.save(cached, format="WEBP", quality=82)
-    doc.close()
+    with keyed_lock(f"thumb:{document_id}:{cache_version}:{page_uuid}:{dpi}"):
+        if cached.exists():
+            return FileResponse(path=cached, media_type="image/webp", filename=f"{page_uuid}.webp")
+
+        cached.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = cached.with_suffix(f"{cached.suffix}.{uuid4().hex}.tmp")
+        doc = pymupdf.open(pdf_path)
+        try:
+            page = doc[page_index]
+            scale = dpi / 72.0
+            pix = page.get_pixmap(matrix=pymupdf.Matrix(scale, scale), colorspace=pymupdf.csRGB, alpha=False)
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            img.save(temp_path, format="WEBP", quality=82)
+            temp_path.replace(cached)
+        finally:
+            doc.close()
+            if temp_path.exists():
+                temp_path.unlink(missing_ok=True)
+
     return FileResponse(path=cached, media_type="image/webp", filename=f"{page_uuid}.webp")
 
 

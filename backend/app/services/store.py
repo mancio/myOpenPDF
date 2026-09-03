@@ -1,11 +1,23 @@
+import os
 from pathlib import Path
 
 
+def _normalized_path(path: Path) -> str:
+    text = os.path.normcase(str(path))
+    if os.name == "nt" and text.startswith("\\\\?\\"):
+        text = text[4:]
+    return text.rstrip("\\/")
+
+
 def safe_path(root: Path, *parts: str) -> Path:
-    resolved_root = root.resolve()
-    candidate = (root / Path(*parts)).resolve()
-    if not candidate.is_relative_to(resolved_root):
+    resolved_root = root.expanduser().resolve(strict=False)
+    candidate = resolved_root.joinpath(*parts).resolve(strict=False)
+
+    root_norm = _normalized_path(resolved_root)
+    candidate_norm = _normalized_path(candidate)
+    if candidate_norm != root_norm and not candidate_norm.startswith(f"{root_norm}{os.sep}"):
         raise ValueError("invalid path")
+
     return candidate
 
 

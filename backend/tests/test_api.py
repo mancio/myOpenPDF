@@ -1,4 +1,5 @@
 import time
+from concurrent.futures import ThreadPoolExecutor
 from uuid import uuid4
 
 import pymupdf
@@ -113,6 +114,43 @@ def test_oplog_rotate_undo_redo(client):
     response = client.post(f"/api/documents/{doc_id}/redo")
     assert response.status_code == 200
     assert response.json()["cursor"] == 1
+
+
+def test_concurrent_derived_and_thumbnail_requests(client):
+    doc = _create_document(client, page_count=2)
+    doc_id = doc["id"]
+
+    pages = client.get(f"/api/documents/{doc_id}/pages").json()
+    page_uuid = pages[0]["uuid"]
+
+    rotate = client.post(
+        f"/api/documents/{doc_id}/ops",
+        json={"kind": "page.rotate", "payload": {"pages": [page_uuid], "delta": 90}},
+    )
+    assert rotate.status_code == 200
+    version = rotate.json()["version"]
+
+    def request_pdf() -> tuple[int, bytes]:
+        response = client.get(f"/api/documents/{doc_id}/file?version={version}")
+        return response.status_code, response.content[:5]
+
+    def request_thumb() -> tuple[int, str]:
+        response = client.get(f"/api/documents/{doc_id}/pages/{page_uuid}/thumb?version={version}&dpi=110")
+        return response.status_code, response.headers.get("content-type", "")
+
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        file_futures = [executor.submit(request_pdf) for _ in range(10)]
+        thumb_futures = [executor.submit(request_thumb) for _ in range(10)]
+
+    for future in file_futures:
+        status, head = future.result()
+        assert status == 200
+        assert head == b"%PDF-"
+
+    for future in thumb_futures:
+        status, content_type = future.result()
+        assert status == 200
+        assert content_type.startswith("image/webp")
 
 
 def test_scan_preview_and_export_job(client):

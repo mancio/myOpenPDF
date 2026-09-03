@@ -12,6 +12,7 @@ from app.config import get_settings
 from app.models import DocumentModel, OpModel, PageRefModel
 from app.scan.pipeline import export_document_bytes
 from app.schemas import AnnotationPayload, OpRequest, OpResult, ScanParams, StoredOp
+from app.services.locks import keyed_lock
 from app.services.store import assets_dir, derived_pdf_path, original_pdf_path
 
 SUPPORTED_OPS = {
@@ -807,30 +808,38 @@ def apply_pdf_op(
 
 def build_derived_pdf(session: Session, document: DocumentModel, version: int) -> Path:
     settings = get_settings()
-    src_path = original_pdf_path(settings.store_root, document.id)
     output_path = derived_pdf_path(settings.store_root, document.id, version)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    doc = pymupdf.open(src_path)
-    state = load_base_state(session, document.id)
+    with keyed_lock(f"derived:{document.id}:{version}"):
+        if output_path.exists():
+            return output_path
 
-    try:
-        for op in load_ops(session, document.id):
-            if op.seq > version:
-                break
-            payload = _parse_payload(op.payload)
-            if op.kind == "scan.apply":
-                params = ScanParams.model_validate(payload.get("params", {}))
-                seed = params.seed if params.seed is not None else int(uuid4().int & 0x7FFFFFFF)
-                scanned_bytes = export_document_bytes(doc, params, seed)
-                doc.close()
-                doc = pymupdf.open(stream=scanned_bytes, filetype="pdf")
-                apply_state_op(state, op.kind, payload)
-            else:
-                doc = apply_pdf_op(doc, state, op.kind, payload, document.id)
+        src_path = original_pdf_path(settings.store_root, document.id)
+        temp_path = output_path.with_suffix(f"{output_path.suffix}.{uuid4().hex}.tmp")
+        doc = pymupdf.open(src_path)
+        state = load_base_state(session, document.id)
 
-        doc.save(output_path, garbage=4, deflate=True, clean=True)
-    finally:
-        doc.close()
+        try:
+            for op in load_ops(session, document.id):
+                if op.seq > version:
+                    break
+                payload = _parse_payload(op.payload)
+                if op.kind == "scan.apply":
+                    params = ScanParams.model_validate(payload.get("params", {}))
+                    seed = params.seed if params.seed is not None else int(uuid4().int & 0x7FFFFFFF)
+                    scanned_bytes = export_document_bytes(doc, params, seed)
+                    doc.close()
+                    doc = pymupdf.open(stream=scanned_bytes, filetype="pdf")
+                    apply_state_op(state, op.kind, payload)
+                else:
+                    doc = apply_pdf_op(doc, state, op.kind, payload, document.id)
+
+            doc.save(temp_path, garbage=4, deflate=True, clean=True)
+            temp_path.replace(output_path)
+        finally:
+            doc.close()
+            if temp_path.exists():
+                temp_path.unlink(missing_ok=True)
 
     return output_path
